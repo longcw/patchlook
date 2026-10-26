@@ -5,12 +5,45 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      notary_submission_id:
+        description: 'Query an existing Apple notarization submission instead of building'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  notary-status:
+    if: github.event_name == 'workflow_dispatch' && inputs.notary_submission_id != ''
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - name: Query Apple notarization status
+        env:
+          SUBMISSION_ID: ${{ inputs.notary_submission_id }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import os, uuid; uuid.UUID(os.environ["SUBMISSION_ID"])'
+          xcrun notarytool info "$SUBMISSION_ID" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --output-format json > "$RUNNER_TEMP/notary-info.json"
+          cat "$RUNNER_TEMP/notary-info.json"
+          {
+            printf '### Apple notarization status\n\n```json\n'
+            cat "$RUNNER_TEMP/notary-info.json"
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          STATUS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary-info.json")"
+          if [[ "$STATUS" != 'In Progress' ]]; then
+            xcrun notarytool log "$SUBMISSION_ID" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD"
+          fi
+
   build:
+    if: inputs.notary_submission_id == ''
     timeout-minutes: 90
     strategy:
       fail-fast: false

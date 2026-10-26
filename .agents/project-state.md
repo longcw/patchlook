@@ -13,7 +13,7 @@
 - `src/change_tree.rs` 的 `ChangeTree` 将变更构造成 Kit 树控件，压缩单一路径目录，按原始文件索引保存选择身份；同一路径的暂存／未暂存条目及行数仍各自独立。
 - `src/preferences.rs` 以 Cargo 包名 `patchlook` 确定系统应用配置目录，读写 `preferences.json`，保存外观、diff 模式、语言、最近仓库和各仓库浏览分支；读取与显式保存分离，写入经临时文件重命名完成，首次启动使用新目录的默认设置。
 - `src/strings.rs` 使用 `locales/*.json` 的九种语言资源，并与 Kit 共用当前 locale；`themes/*.json` 提供统一配色。窗口重新激活时重读系统语言，系统外观变化由订阅响应。
-- `.github/workflows/desktop.yml` 在 main／PR 上执行三平台检查和开发打包；与 Cargo 版本一致的 v 标签触发 macOS Developer ID 签名、公证及票据验证，三平台通过后创建 Release 草稿。`scripts/package.py` 统一生成包名和图标，默认 ad-hoc，显式参数启用正式签名及钥匙串公证凭据；失败不会退回开发包。
+- `.github/workflows/desktop.yml` 在 main／PR 上执行三平台检查和开发打包；与 Cargo 版本一致的 v 标签触发 macOS Developer ID 签名、公证及票据验证，三平台通过后创建 Release 草稿。`scripts/package.py` 统一生成包名和图标，默认 ad-hoc，显式参数启用正式签名及钥匙串公证凭据；失败不会退回开发包。手动运行填写 `notary_submission_id` 时仅查询既有 Apple 提交状态与完成后的日志，不构建或上传。
 
 ## Project Conventions
 - GPUI 统一通过 `gpui_kit` 导入，复用其控件与主题；界面文案集中于 `locales/*.json`，各语言键及占位符须一致。

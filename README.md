@@ -90,6 +90,8 @@ python3 scripts/package.py
 
 证书、私钥和密码不放入仓库。凭据缺失、签名失败、公证未通过或票据验证失败都会终止发布任务，不退回 ad-hoc 包。首次公证可能超过工作流中 30 分钟的等待上限，此时任务失败，Apple 仍会继续处理；依据日志中的提交 ID 查询结果后再重跑。
 
+查询已有公证：在 `Actions → Desktop → Run workflow` 填写 `notary_submission_id`，只运行状态查询，不重新构建或上传。Apple 返回的状态会写入任务日志和 Summary；处理完成后还会读取公证详情日志。留空此输入时仍运行正常构建检查。
+
 本地也可使用已安装的证书及通过 `xcrun notarytool store-credentials` 保存的凭据：
 
 ```sh
