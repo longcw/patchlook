@@ -1,0 +1,10 @@
+Use case: logo-brand
+Asset type: a finished square desktop app icon concept for Patchlook, a native, read-only Git changes and history viewer.
+
+Design a single distinctive, polished icon, not a presentation board. The visual idea is two versions of the same document compared side by side. A bold central pair of upright off-white document panels, subtly staggered in height, separated by a crisp dark vertical seam. On each panel use only three very thick, short horizontal code-row shapes: quiet charcoal rows with one muted coral deletion row on the left and one muted jade green addition row on the right. Integrate a simple minus cutout into the coral row and a simple plus cutout into the green row. The comparison mark should read as one unified emblem with a clear silhouette and generous negative space, rather than a miniature screenshot or two floating cards.
+
+Style: precise contemporary desktop icon, restrained, almost flat with a very slight tactile bevel and soft internal depth, confidently drawn geometry and optically balanced rounded corners. Match a quiet native developer-tool interface. No glass, transparency effects within the icon, glossy plastic, neon, lens, magnifying glass, eye, git branch diagram, code brackets, lettering, wordmark, watermark, or decorative clutter.
+
+Palette grounded in the actual application: matte graphite #252525 base, warm off-white #EAE8E3 document symbol, muted coral #E76B64 for removed content, muted jade green #49B983 for added content. Solid, readable color regions; minimal tonal shading, no dramatic gradients.
+
+Composition: frontal orthographic view, perfectly square 1024 x 1024 canvas. One graphite rounded-square/squircle base plate centered and occupying about 84 percent of the canvas, with an evenly transparent margin outside the plate. The main symbol fills the interior confidently with enough padding to remain readable at 32 px. No surrounding objects, background scene, labels, or mockup. Real alpha transparency outside the icon silhouette. Deliver only the icon image.

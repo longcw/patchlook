@@ -47,6 +47,8 @@ python3 scripts/package.py
 open "dist/Patchlook.app"
 ```
 
+安装时打开 `dist/` 下的 DMG，将 `Patchlook.app` 拖入其中的 `Applications` 文件夹。打包脚本从 `assets/app-icon/patchlook-v2.png` 生成包含标准与 Retina 尺寸的 ICNS，并写入应用图标声明。
+
 ### Windows
 
 Windows 10+，MSVC Rust 工具链，Visual Studio 2022 的“使用 C++ 的桌面开发”组件及 Windows SDK，CMake 和 Git for Windows。安装 Git 时选择让第三方应用能够从 PATH 调用 Git。
@@ -69,7 +71,34 @@ python3 scripts/package.py
 ./target/release/patchlook
 ```
 
-打包结果写入 `dist/`。macOS 产物为 `.app` 和 ZIP，Windows 为 ZIP，Linux 为 tar.gz。当前产物供本地开发使用，未进行代码签名、公证或商店发布。Linux 包使用构建系统的动态库，不能视为适配任意发行版的通用包。
+打包结果写入 `dist/`。macOS 产物为 `.app`、ZIP 和 DMG，Windows 为 ZIP，Linux 为 tar.gz。默认 macOS 包使用 ad-hoc 签名供本地安装验证；版本发布流程使用 Developer ID 签名和 Apple 公证。Linux 包使用构建系统的动态库，不能视为适配任意发行版的通用包。
+
+### GitHub 版本发布
+
+普通 `main` 提交和 Pull Request 运行三平台检查与打包，不读取发布凭据。推送与 `Cargo.toml` 版本一致的标签（例如 `v0.1.0`）后，macOS 任务在临时钥匙串导入证书，签名时启用 Hardened Runtime 与安全时间戳，将 DMG 提交 Apple 公证，并为 DMG 和 ZIP 内的应用附加公证票据。三平台任务全部通过后创建或更新 Release 草稿，供人工检查后发布；不会覆盖已公开 Release 的附件。
+
+在仓库 `Settings → Secrets and variables → Actions` 配置以下 Repository secrets：
+
+| 名称 | 内容 |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | 包含私钥的 Developer ID Application `.p12` 文件的 Base64 |
+| `MACOS_CERTIFICATE_PASSWORD` | `.p12` 导出密码 |
+| `MACOS_SIGNING_IDENTITY` | 完整的 `Developer ID Application: 名称 (TEAMID)` 证书名称 |
+| `APPLE_ID` | Apple 账号邮箱 |
+| `APPLE_TEAM_ID` | 付费开发者团队 ID |
+| `APPLE_APP_SPECIFIC_PASSWORD` | 为公证创建的 App 专用密码 |
+
+证书、私钥和密码不放入仓库。凭据缺失、签名失败、公证未通过或票据验证失败都会终止发布任务，不退回 ad-hoc 包。首次公证可能超过工作流中 30 分钟的等待上限，此时任务失败，Apple 仍会继续处理；依据日志中的提交 ID 查询结果后再重跑。
+
+本地也可使用已安装的证书及通过 `xcrun notarytool store-credentials` 保存的凭据：
+
+```sh
+python3 scripts/package.py \
+  --sign-identity "Developer ID Application: Name (TEAMID)" \
+  --notary-profile patchlook-notary
+```
+
+配置完成后提交代码并推送版本标签。签名与公证只是发布验证的一部分，不代表其他平台已经完成实机验收。
 
 ## 快捷键
 

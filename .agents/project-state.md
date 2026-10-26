@@ -13,7 +13,7 @@
 - `src/change_tree.rs` 的 `ChangeTree` 将变更构造成 Kit 树控件，压缩单一路径目录，按原始文件索引保存选择身份；同一路径的暂存／未暂存条目及行数仍各自独立。
 - `src/preferences.rs` 以 Cargo 包名 `patchlook` 确定系统应用配置目录，读写 `preferences.json`，保存外观、diff 模式、语言、最近仓库和各仓库浏览分支；读取与显式保存分离，写入经临时文件重命名完成，首次启动使用新目录的默认设置。
 - `src/strings.rs` 使用 `locales/*.json` 的九种语言资源，并与 Kit 共用当前 locale；`themes/*.json` 提供统一配色。窗口重新激活时重读系统语言，系统外观变化由订阅响应。
-- `.github/workflows/desktop.yml` 定义三平台格式检查、Clippy、测试、Release 编译和打包；`scripts/package.py` 从 Cargo 包名和英文语言资源读取名称，将已编译二进制封装到 `dist/`，不执行签名、上传或安装。
+- `.github/workflows/desktop.yml` 在 main／PR 上执行三平台检查和开发打包；与 Cargo 版本一致的 v 标签触发 macOS Developer ID 签名、公证及票据验证，三平台通过后创建 Release 草稿。`scripts/package.py` 统一生成包名和图标，默认 ad-hoc，显式参数启用正式签名及钥匙串公证凭据；失败不会退回开发包。
 
 ## Project Conventions
 - GPUI 统一通过 `gpui_kit` 导入，复用其控件与主题；界面文案集中于 `locales/*.json`，各语言键及占位符须一致。
@@ -31,7 +31,7 @@
 - 亮／暗／跟随系统外观、九种界面语言及跟随系统语言；可拖动侧栏、固定文件工具栏和虚拟滚动列表。
 
 ### In Progress
-暂无已约定且需要继续执行的任务。
+- [active] 验证 GitHub 首次发布流程。签名、公证与 Release 草稿逻辑已接入，仓库为 `worldtheater/patchlook`；下一步推送代码及 v0.1.0 标签，核对三平台 CI、公证结果和草稿附件。凭据仅从 GitHub Secrets 注入，尚未证实远端签名与公证通过。
 
 ### Next
 暂无已确认的后续范围。
@@ -44,9 +44,9 @@
 
 ## Verification
 - 2026-10-26，Patchlook 改名后的工作区通过 32 项测试、Clippy 禁止警告、格式检查及 macOS arm64 Release 构建。锁文件仅改变根 package 名，依赖版本和来源不变。
-- macOS 新产物为 `dist/Patchlook.app` 和 `dist/patchlook-0.1.0-darwin-arm64.zip`；已校验压缩完整性、二进制一致性、执行权限、应用名称／标识及九种语言声明，并启动确认窗口和原生菜单显示 `Patchlook`。旧名称生成包已清理。
+- 2026-10-26，新图标接入后 macOS arm64 Release 构建与打包通过；`.app`、ZIP 和 DMG 的内容、执行权限、多尺寸 ICNS 与图标声明、ad-hoc 签名及 DMG 校验和已核对。只读挂载确认 Applications 快捷入口，Finder 显示新版 P 图标，应用包重新启动成功；未执行复制到 `/Applications` 的安装操作。
 - Git、设置与语言、目录树、图片、diff 布局及滚动回归由现有测试覆盖；改名后未重新执行完整桌面交互验收。之前的桌面实测范围见 `README.md` 的“验证”。
-- 三平台 CI 仅确认配置存在，未查询远端运行结果；Windows／Linux 实机表现未独立验证。打包产物未进行开发者签名或公证，Linux 包依赖构建系统动态库，不是通用发行版包。
+- 发布流程本地通过 4 项 Python 测试（接受／拒绝公证、认证失败和缺失签名参数），并验证默认 macOS 打包仍成功；GitHub 签名与公证尚待首次运行。Windows／Linux 实机未独立验证；Linux 包依赖构建系统动态库，不是通用发行版包。
 
 ## Source Pointers
 - `README.md` — 功能边界、开发运行、平台依赖、历史验证记录与 Kit 补丁维护。
@@ -57,3 +57,4 @@
 - `src/preferences.rs`、`src/strings.rs`、`locales/`、`themes/` — 持久化、语言与共享外观。
 - `tests/diff_layout.rs`、`tests/scroll_bounce.rs` — Kit 补丁的消费方布局、上下文与滚动回归。
 - `.github/workflows/desktop.yml`、`scripts/package.py` — 三平台验证和本地打包流程。
+- `assets/app-icon/` — 已选用的 `patchlook-v2.png` 为深灰底米白色分隔 P，1254×1254、带透明通道；macOS 打包从此源图生成 ICNS，已检查 16／32／48 像素缩略图。原版 `patchlook.png` 因小尺寸细节过密保留作对照；对应提示词记录内置 imagegen 来源。
