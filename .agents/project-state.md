@@ -31,7 +31,7 @@
 - 亮／暗／跟随系统外观、九种界面语言及跟随系统语言；可拖动侧栏、固定文件工具栏和虚拟滚动列表。
 
 ### In Progress
-- [active] 完成 v0.1.0 首次公证与 Release 草稿。标签指向 `c51e0c8`；GitHub 运行 `40340977301` 的 Windows／Linux 打包通过，macOS 签名成功，但 Apple 提交 `028a4770-3325-43e5-8b88-cdda58549b3c` 在 1800 秒等待后超时（notarytool exit 124，非拒绝结果），Release job 已跳过。下一步查询该提交状态，再重跑失败任务并核对票据和草稿附件；不要宣称已公证。
+暂无已约定且需要继续执行的任务。
 
 ### Next
 暂无已确认的后续范围。
@@ -43,11 +43,11 @@
 暂无待确认的决策记录。
 
 ## Verification
-- 2026-10-26，Patchlook 改名后的工作区通过 32 项测试、Clippy 禁止警告、格式检查及 macOS arm64 Release 构建。锁文件仅改变根 package 名，依赖版本和来源不变。
-- 2026-10-26，新图标接入后 macOS arm64 Release 构建与打包通过；`.app`、ZIP 和 DMG 的内容、执行权限、多尺寸 ICNS 与图标声明、ad-hoc 签名及 DMG 校验和已核对。只读挂载确认 Applications 快捷入口，Finder 显示新版 P 图标，应用包重新启动成功；未执行复制到 `/Applications` 的安装操作。
-- Git、设置与语言、目录树、图片、diff 布局及滚动回归由现有测试覆盖；改名后未重新执行完整桌面交互验收。之前的桌面实测范围见 `README.md` 的“验证”。
-- GitHub 运行 `40340977301` 已通过三平台格式检查、Clippy、Rust 与 Python 测试及 Release 构建；Windows／Linux 打包通过，macOS 签名通过但公证等待超时，票据与 Release 草稿尚未验证。Windows 两处测试的目录路径字符串比较已改为 Path 比较并通过 CI。三平台完整桌面交互未独立重验；Linux 包依赖构建系统动态库，不是通用发行版包。
-- 同一提交的 main 运行 `40340968382` 中，macOS 因 GitHub hosted ARM runner 容量不足、重试分配失败而取消；Windows／Linux 通过。不是源码编译失败。
+- 2026-10-26，v0.1.0（`c51e0c8`）的 GitHub 运行 `40340977301` attempt 2 全部通过：三平台格式检查、Clippy、Rust 测试、4 项 Python 发布失败路径测试、Release 构建和打包。Windows 两处测试的目录路径比较已修正并通过 CI。
+- macOS Developer ID 签名、公证、DMG／应用票据附加与校验、Gatekeeper 评估均通过。首次提交曾超过 CI 的 1800 秒等待上限，随后由只读查询运行 `40350428057` 确认 Accepted；不是 Apple 拒绝应用。
+- v0.1.0 Release 草稿已生成并核对附件：macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz；尚未公开发布。手动公证查询已验证只查询既有提交，跳过构建和发布。
+- 本机此前已确认新版 P 图标在 Finder 中显示、应用包正常启动；此次未重新执行完整桌面交互验收，Windows／Linux 实机表现未独立验证。Linux 包依赖构建系统动态库，不是通用发行版包。
+- 同一提交的 main 运行 `40340968382` 中，macOS 因 GitHub hosted ARM runner 容量不足、重试分配失败而取消；Windows／Linux 通过。该历史记录不是源码编译失败。
 
 ## Source Pointers
 - `README.md` — 功能边界、开发运行、平台依赖、历史验证记录与 Kit 补丁维护。
