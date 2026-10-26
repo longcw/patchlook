@@ -31,7 +31,7 @@
 - 亮／暗／跟随系统外观、九种界面语言及跟随系统语言；可拖动侧栏、固定文件工具栏和虚拟滚动列表。
 
 ### In Progress
-- [active] 验证 GitHub 首次发布流程。仓库 `worldtheater/patchlook` 已推送，首次 v0.1.0 运行已通过凭据导入及 macOS／Linux 测试；Windows 暴露两处测试将目录路径硬编码为斜杠字符串，已改为 Path 比较并通过本机目录树回归。下一步核对重跑的三平台 CI、公证结果和 Release 草稿附件。
+- [active] 完成 v0.1.0 首次公证与 Release 草稿。标签指向 `c51e0c8`；GitHub 运行 `40340977301` 的 Windows／Linux 打包通过，macOS 签名成功，但 Apple 提交 `028a4770-3325-43e5-8b88-cdda58549b3c` 在 1800 秒等待后超时（notarytool exit 124，非拒绝结果），Release job 已跳过。下一步查询该提交状态，再重跑失败任务并核对票据和草稿附件；不要宣称已公证。
 
 ### Next
 暂无已确认的后续范围。
@@ -46,7 +46,8 @@
 - 2026-10-26，Patchlook 改名后的工作区通过 32 项测试、Clippy 禁止警告、格式检查及 macOS arm64 Release 构建。锁文件仅改变根 package 名，依赖版本和来源不变。
 - 2026-10-26，新图标接入后 macOS arm64 Release 构建与打包通过；`.app`、ZIP 和 DMG 的内容、执行权限、多尺寸 ICNS 与图标声明、ad-hoc 签名及 DMG 校验和已核对。只读挂载确认 Applications 快捷入口，Finder 显示新版 P 图标，应用包重新启动成功；未执行复制到 `/Applications` 的安装操作。
 - Git、设置与语言、目录树、图片、diff 布局及滚动回归由现有测试覆盖；改名后未重新执行完整桌面交互验收。之前的桌面实测范围见 `README.md` 的“验证”。
-- 发布流程本地通过 4 项 Python 测试（接受／拒绝公证、认证失败和缺失签名参数），并验证默认 macOS 打包仍成功；GitHub 签名与公证尚待首次运行。Windows／Linux 实机未独立验证；Linux 包依赖构建系统动态库，不是通用发行版包。
+- GitHub 运行 `40340977301` 已通过三平台格式检查、Clippy、Rust 与 Python 测试及 Release 构建；Windows／Linux 打包通过，macOS 签名通过但公证等待超时，票据与 Release 草稿尚未验证。Windows 两处测试的目录路径字符串比较已改为 Path 比较并通过 CI。三平台完整桌面交互未独立重验；Linux 包依赖构建系统动态库，不是通用发行版包。
+- 同一提交的 main 运行 `40340968382` 中，macOS 因 GitHub hosted ARM runner 容量不足、重试分配失败而取消；Windows／Linux 通过。不是源码编译失败。
 
 ## Source Pointers
 - `README.md` — 功能边界、开发运行、平台依赖、历史验证记录与 Kit 补丁维护。
@@ -56,5 +57,5 @@
 - `src/change_tree.rs`、`src/image_diff.rs` — 目录树和图片预览的实现及测试。
 - `src/preferences.rs`、`src/strings.rs`、`locales/`、`themes/` — 持久化、语言与共享外观。
 - `tests/diff_layout.rs`、`tests/scroll_bounce.rs` — Kit 补丁的消费方布局、上下文与滚动回归。
-- `.github/workflows/desktop.yml`、`scripts/package.py` — 三平台验证和本地打包流程。
+- `.github/workflows/desktop.yml`、`scripts/package.py`、`scripts/test_package.py` — 三平台验证、签名公证、Release 草稿与失败路径回归；Secrets 配置见 README。
 - `assets/app-icon/` — 已选用的 `patchlook-v2.png` 为深灰底米白色分隔 P，1254×1254、带透明通道；macOS 打包从此源图生成 ICNS，已检查 16／32／48 像素缩略图。原版 `patchlook.png` 因小尺寸细节过密保留作对照；对应提示词记录内置 imagegen 来源。
