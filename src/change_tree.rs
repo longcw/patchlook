@@ -578,7 +578,8 @@ mod tests {
                 .nodes
                 .iter()
                 .find(|(_, node)| {
-                    node.file_index.is_none() && node.path.as_str() == "crates/model/src/specs"
+                    node.file_index.is_none()
+                        && Path::new(node.path.as_str()) == Path::new("crates/model/src/specs")
                 })
                 .unwrap()
                 .0
@@ -634,7 +635,9 @@ mod tests {
                 .tree
                 .nodes
                 .iter()
-                .find(|(_, node)| node.path.as_str() == "crates/model/src/specs")
+                .find(|(_, node)| {
+                    Path::new(node.path.as_str()) == Path::new("crates/model/src/specs")
+                })
                 .unwrap()
                 .0
                 .clone();

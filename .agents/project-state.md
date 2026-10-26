@@ -31,7 +31,7 @@
 - 亮／暗／跟随系统外观、九种界面语言及跟随系统语言；可拖动侧栏、固定文件工具栏和虚拟滚动列表。
 
 ### In Progress
-- [active] 验证 GitHub 首次发布流程。签名、公证与 Release 草稿逻辑已接入，仓库为 `worldtheater/patchlook`；下一步推送代码及 v0.1.0 标签，核对三平台 CI、公证结果和草稿附件。凭据仅从 GitHub Secrets 注入，尚未证实远端签名与公证通过。
+- [active] 验证 GitHub 首次发布流程。仓库 `worldtheater/patchlook` 已推送，首次 v0.1.0 运行已通过凭据导入及 macOS／Linux 测试；Windows 暴露两处测试将目录路径硬编码为斜杠字符串，已改为 Path 比较并通过本机目录树回归。下一步核对重跑的三平台 CI、公证结果和 Release 草稿附件。
 
 ### Next
 暂无已确认的后续范围。
