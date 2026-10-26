@@ -1,0 +1,21 @@
+# Rust build output and rustfmt backups (keep Cargo.lock)
+target/
+*.rs.bk
+
+# Packaged desktop applications and archives
+/dist/
+
+# Python packaging script caches
+__pycache__/
+*.py[cod]
+
+# Operating system metadata
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# Editor temporary files
+*.swp
+*.swo
+*~

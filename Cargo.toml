@@ -1,0 +1,29 @@
+[package]
+name = "diff-tool"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "A local Git diff and history viewer for macOS, Windows and Linux"
+publish = false
+
+[dependencies]
+anyhow = "1"
+directories = "6"
+gpui-kit = { version = "=0.8.0", features = ["syntect"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sys-locale = "0.3.2"
+
+[patch.crates-io]
+gpui-kit = { git = "https://github.com/worldtheater/gpui-kit.git", rev = "e2a084aedbd36212545cf6242cc1c58f4b834562" }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.8.0", features = ["test-support"] }
+tempfile = "3"
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"
+strip = true

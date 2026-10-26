@@ -1,0 +1,12 @@
+{
+  "name": "Diff Tool Light",
+  "mode": "light",
+  "colors": {
+    "accent.background": "#ededed",
+    "list.hover.background": "#f0f0f0",
+    "secondary.background": "#f3f3f3",
+    "secondary.hover.background": "#ededed",
+    "secondary.active.background": "#e5e5e5",
+    "button.active.background": "#dfdfdf"
+  }
+}
