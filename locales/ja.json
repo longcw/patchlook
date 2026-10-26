@@ -1,5 +1,5 @@
 {
-  "app_name": "Diff Tool",
+  "app_name": "Patchlook",
   "open_repository": "リポジトリを開く",
   "refresh": "再読み込み",
   "working_tree": "変更",
@@ -40,7 +40,7 @@
   "settings_failed": "設定の保存に失敗しました",
   "dismiss": "閉じる",
   "first_parent": "最初の親コミットとの比較",
-  "quit": "Diff Tool を終了",
+  "quit": "Patchlook を終了",
   "file_menu": "ファイル",
   "copy": "コピー",
   "edit_menu": "編集",

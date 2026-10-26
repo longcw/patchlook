@@ -1,6 +1,5 @@
 use crate::strings::tr;
 use anyhow::{Context as _, Result};
-use diff_tool::git::{Change, FileVersions};
 use gpui_kit::{
     assets::IconName,
     base::{ElementExt, TestSupportExt},
@@ -14,6 +13,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
+use patchlook::git::{Change, FileVersions};
 use std::{path::Path, sync::Arc};
 
 const MIN_ZOOM: f32 = 0.05;

@@ -1,4 +1,4 @@
-# Diff Tool
+# Patchlook
 
 基于 Rust、GPUI 和 GPUI Kit 的本地 Git 桌面查看器，面向 macOS、Windows、Linux。所有仓库读取在本机完成，不需要后台服务或浏览器插件。
 
@@ -44,7 +44,7 @@ macOS 15+，安装 Xcode 及命令行工具。确保 `xcode-select -p` 指向有
 ```sh
 cargo build --locked --release
 python3 scripts/package.py
-open "dist/Diff Tool.app"
+open "dist/Patchlook.app"
 ```
 
 ### Windows
@@ -54,7 +54,7 @@ Windows 10+，MSVC Rust 工具链，Visual Studio 2022 的“使用 C++ 的桌�
 ```powershell
 cargo build --locked --release
 python scripts/package.py
-.\target\release\diff-tool.exe
+.\target\release\patchlook.exe
 ```
 
 ### Linux
@@ -66,7 +66,7 @@ sudo apt-get install gcc g++ clang cmake pkg-config libfontconfig-dev \
   libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan1
 cargo build --locked --release
 python3 scripts/package.py
-./target/release/diff-tool
+./target/release/patchlook
 ```
 
 打包结果写入 `dist/`。macOS 产物为 `.app` 和 ZIP，Windows 为 ZIP，Linux 为 tar.gz。当前产物供本地开发使用，未进行代码签名、公证或商店发布。Linux 包使用构建系统的动态库，不能视为适配任意发行版的通用包。
@@ -105,7 +105,7 @@ GitHub Actions 配置在三个系统上编译、运行测试并打包；工作�
 - `src/strings.rs` 与 `locales/*.json`：共享组件语言设置的界面文案和各语言资源。
 - `themes/`：统一的亮暗配色、悬停反馈与暗色语法高亮主题。
 
-设置保存在操作系统的应用配置目录下，文件名为 `preferences.json`。构建锁定 GPUI Kit 0.8.0 与 `Cargo.lock`；通过 Kit 统一导入 GPUI，不混用其他 GPUI 版本。
+设置以 `patchlook` 为应用目录名保存在系统配置目录下，文件名为 `preferences.json`。构建锁定 GPUI Kit 0.8.0 与 `Cargo.lock`；通过 Kit 统一导入 GPUI，不混用其他 GPUI 版本。
 
 ### GPUI Kit 补丁维护
 

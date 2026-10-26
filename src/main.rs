@@ -3,7 +3,7 @@ mod app;
 mod change_tree;
 mod image_diff;
 mod strings;
-use app::{DiffTool, OpenRepository, Quit, Refresh};
+use app::{OpenRepository, Patchlook, Quit, Refresh};
 use gpui_kit::*;
 use strings::tr;
 
@@ -52,13 +52,13 @@ fn main() {
                     title: Some(tr("app_name").into()),
                     ..component::TitleBar::title_bar_options()
                 }),
-                app_id: Some("dev.difftool.app".into()),
+                app_id: Some(concat!("dev.", env!("CARGO_PKG_NAME"), ".app").into()),
                 ..component::TitleBar::window_options()
             },
             cx,
-            |window, cx| cx.new(|cx| DiffTool::new(repository, window, cx)),
+            |window, cx| cx.new(|cx| Patchlook::new(repository, window, cx)),
         )
-        .expect("Cannot open Diff Tool");
+        .expect("Cannot open Patchlook");
         cx.activate(true);
     });
 }

@@ -2,7 +2,6 @@ use crate::{
     image_diff::image_format,
     strings::{area_label, tr},
 };
-use diff_tool::git::{Area, Change, DiffStats};
 use gpui_kit::{
     assets::IconName,
     base::{TestSupportExt, Tree, TreeItem, TreeState},
@@ -14,6 +13,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
+use patchlook::git::{Area, Change, DiffStats};
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -411,8 +411,8 @@ impl ChangeTree {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
-    use diff_tool::git::Area;
     use gpui_kit::test::TestWindowExt;
+    use patchlook::git::Area;
     use std::cell::Cell;
 
     fn changes() -> Vec<Change> {

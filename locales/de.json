@@ -1,5 +1,5 @@
 {
-  "app_name": "Diff Tool",
+  "app_name": "Patchlook",
   "open_repository": "Repository öffnen",
   "refresh": "Aktualisieren",
   "working_tree": "Änderungen",
@@ -40,7 +40,7 @@
   "settings_failed": "Einstellungen konnten nicht gespeichert werden",
   "dismiss": "Schließen",
   "first_parent": "Vergleich mit dem ersten Eltern-Commit",
-  "quit": "Diff Tool beenden",
+  "quit": "Patchlook beenden",
   "file_menu": "Datei",
   "copy": "Kopieren",
   "edit_menu": "Bearbeiten",

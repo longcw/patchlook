@@ -1,5 +1,5 @@
 {
-  "app_name": "Diff Tool",
+  "app_name": "Patchlook",
   "open_repository": "開啟儲存庫",
   "refresh": "重新整理",
   "working_tree": "變更",
@@ -40,7 +40,7 @@
   "settings_failed": "設定儲存失敗",
   "dismiss": "關閉提示",
   "first_parent": "相對於第一個父提交",
-  "quit": "結束 Diff Tool",
+  "quit": "結束 Patchlook",
   "file_menu": "檔案",
   "copy": "複製",
   "edit_menu": "編輯",

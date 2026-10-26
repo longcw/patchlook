@@ -1,5 +1,5 @@
 {
-  "app_name": "Diff Tool",
+  "app_name": "Patchlook",
   "open_repository": "저장소 열기",
   "refresh": "새로 고침",
   "working_tree": "변경",
@@ -40,7 +40,7 @@
   "settings_failed": "설정 저장 실패",
   "dismiss": "닫기",
   "first_parent": "첫 번째 부모 커밋과 비교",
-  "quit": "Diff Tool 종료",
+  "quit": "Patchlook 종료",
   "file_menu": "파일",
   "copy": "복사",
   "edit_menu": "편집",

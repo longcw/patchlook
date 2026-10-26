@@ -1,5 +1,5 @@
 {
-  "app_name": "Diff Tool",
+  "app_name": "Patchlook",
   "open_repository": "Abrir repositorio",
   "refresh": "Actualizar",
   "working_tree": "Cambios",
@@ -40,7 +40,7 @@
   "settings_failed": "Error al guardar los ajustes",
   "dismiss": "Cerrar",
   "first_parent": "Comparado con el primer padre",
-  "quit": "Salir de Diff Tool",
+  "quit": "Salir de Patchlook",
   "file_menu": "Archivo",
   "copy": "Copiar",
   "edit_menu": "Editar",

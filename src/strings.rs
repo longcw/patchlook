@@ -1,5 +1,5 @@
-use diff_tool::{git::Area, preferences::Language};
 use gpui_kit::component;
+use patchlook::{git::Area, preferences::Language};
 use std::{collections::HashMap, sync::OnceLock};
 
 const RESOURCES: [(&str, &str); 9] = [

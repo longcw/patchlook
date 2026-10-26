@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package a previously built binary; no signing, uploads or installation."""
 import argparse
+import json
 import platform
 import plistlib
 import shutil
@@ -13,27 +14,30 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--profile", choices=["debug", "release"], default="release")
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
-version = tomllib.loads((root / "Cargo.toml").read_text())["package"]["version"]
+package = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+package_name = package["name"]
+version = package["version"]
+display_name = json.loads((root / "locales/en.json").read_text(encoding="utf-8"))["app_name"]
 system = platform.system()
-name = "diff-tool.exe" if system == "Windows" else "diff-tool"
+name = f"{package_name}.exe" if system == "Windows" else package_name
 binary = root / "target" / args.profile / name
 if not binary.is_file():
     parser.error(f"Build first: missing {binary}")
 dist = root / "dist"
 dist.mkdir(exist_ok=True)
-artifact = f"diff-tool-{version}-{system.lower()}-{platform.machine().lower()}"
+artifact = f"{package_name}-{version}-{system.lower()}-{platform.machine().lower()}"
 
 if system == "Darwin":
-    app = dist / "Diff Tool.app"
+    app = dist / f"{display_name}.app"
     contents = app / "Contents"
     (contents / "MacOS").mkdir(parents=True, exist_ok=True)
     (contents / "Resources").mkdir(exist_ok=True)
-    shutil.copy2(binary, contents / "MacOS" / "diff-tool")
+    shutil.copy2(binary, contents / "MacOS" / package_name)
     info = {
-        "CFBundleName": "Diff Tool",
-        "CFBundleDisplayName": "Diff Tool",
-        "CFBundleIdentifier": "dev.difftool.app",
-        "CFBundleExecutable": "diff-tool",
+        "CFBundleName": display_name,
+        "CFBundleDisplayName": display_name,
+        "CFBundleIdentifier": f"dev.{package_name}.app",
+        "CFBundleExecutable": package_name,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,

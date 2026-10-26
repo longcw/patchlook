@@ -3,10 +3,6 @@ use crate::{
     image_diff::{ImageDiff, ImageVersions, image_format},
     strings::{area_label, language_name, tr},
 };
-use diff_tool::{
-    git::{Branch, Change, Commit, DiffStats, Repository, Snapshot},
-    preferences::{Appearance, Language, Layout, Preferences},
-};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
@@ -23,9 +19,13 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
+use patchlook::{
+    git::{Branch, Change, Commit, DiffStats, Repository, Snapshot},
+    preferences::{Appearance, Language, Layout, Preferences},
+};
 use std::path::PathBuf;
 
-gpui_kit::actions!(diff_tool, [OpenRepository, Refresh, Quit]);
+gpui_kit::actions!(patchlook, [OpenRepository, Refresh, Quit]);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -34,7 +34,7 @@ enum View {
     History,
 }
 
-pub struct DiffTool {
+pub struct Patchlook {
     preferences: Preferences,
     repository: Option<Repository>,
     branch: String,
@@ -70,7 +70,7 @@ pub struct DiffTool {
     focus: FocusHandle,
 }
 
-impl DiffTool {
+impl Patchlook {
     pub fn new(initial: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (preferences, error) = match Preferences::read() {
             Ok(preferences) => (preferences, None),
@@ -581,7 +581,7 @@ fn list_scrollbar(id: &'static str, handle: &UniformListScrollHandle) -> Div {
     )
 }
 
-impl DiffTool {
+impl Patchlook {
     fn language_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let app = cx.entity().downgrade();
         Button::new("language")
@@ -1644,7 +1644,7 @@ impl DiffTool {
     }
 }
 
-impl Render for DiffTool {
+impl Render for Patchlook {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = if self.repository.is_none()
             && self.preferences.recent_repositories.is_empty()
@@ -1754,7 +1754,7 @@ impl Render for DiffTool {
             .text_color(cx.theme().foreground)
             .font_family(cx.theme().font_family.clone())
             .text_size(cx.theme().font_size)
-            .key_context("DiffTool")
+            .key_context("Patchlook")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::refresh))
@@ -1797,9 +1797,9 @@ impl Render for DiffTool {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
-    use diff_tool::git::Area;
     use gpui_kit::component::scroll::ScrollbarHandle;
     use gpui_kit::test::TestWindowExt;
+    use patchlook::git::Area;
 
     #[gpui_kit::test]
     fn file_navigation_keeps_header_and_code_until_replacement_is_ready(cx: &mut TestAppContext) {
@@ -1809,7 +1809,7 @@ mod tests {
         let root = directory.path().to_path_buf();
         let (handle, app) = cx.update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-                cx.new(|cx| DiffTool {
+                cx.new(|cx| Patchlook {
                     preferences: Preferences::default(),
                     repository: Some(Repository { root }),
                     branch: "main".into(),

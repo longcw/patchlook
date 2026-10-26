@@ -1319,19 +1319,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diff-tool"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "directories",
- "gpui-kit",
- "serde",
- "serde_json",
- "sys-locale",
- "tempfile",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4994,6 +4981,19 @@ name = "pastey"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
+
+[[package]]
+name = "patchlook"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "gpui-kit",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "tempfile",
+]
 
 [[package]]
 name = "pathfinder_geometry"

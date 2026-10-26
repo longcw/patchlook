@@ -33,7 +33,7 @@ jobs:
       - run: python scripts/package.py
       - uses: actions/upload-artifact@v4
         with:
-          name: diff-tool-${{ runner.os }}
+          name: patchlook-${{ runner.os }}
           path: |
             dist/*.zip
             dist/*.tar.gz

@@ -255,7 +255,7 @@ impl Preferences {
     }
 
     fn file() -> Result<PathBuf> {
-        Ok(ProjectDirs::from("", "", "diff-tool")
+        Ok(ProjectDirs::from("", "", env!("CARGO_PKG_NAME"))
             .context("Cannot locate application settings directory")?
             .config_dir()
             .join("preferences.json"))
