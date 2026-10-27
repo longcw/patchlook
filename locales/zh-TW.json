@@ -91,7 +91,7 @@
   "language_short": "繁",
   "about": "關於 Patchlook",
   "about_version": "版本 {version}",
-  "about_description": "原生、唯讀的 Git 檢視器。查看本機變更、瀏覽提交歷史，比較程式碼與圖片。",
+  "about_description": "原生、唯讀的 Git 檢視器，用於瀏覽儲存庫、查看檔案變更與提交歷史。",
   "report_issue": "回報問題",
   "about_built_with": "使用 Rust 和 GPUI Kit 建構",
   "open_source_license": "開源授權"

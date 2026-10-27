@@ -91,7 +91,7 @@
   "language_short": "日",
   "about": "Patchlook について",
   "about_version": "バージョン {version}",
-  "about_description": "ネイティブの読み取り専用 Git ビューアー。ローカルの変更やコミット履歴を確認し、コードと画像を比較できます。",
+  "about_description": "リポジトリ、ファイルの変更、コミット履歴を確認するための、ネイティブの読み取り専用 Git ビューアー。",
   "report_issue": "問題を報告",
   "about_built_with": "Rust と GPUI Kit で構築",
   "open_source_license": "オープンソースライセンス"

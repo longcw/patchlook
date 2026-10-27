@@ -772,7 +772,21 @@ impl Patchlook {
     }
 
     fn select_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.loading || self.active_files().files_loading {
+            return;
+        }
         if self.view == View::Repositories {
+            if !self.repository_preview {
+                let files = &mut self.history.files;
+                // Entering from the tree must not reveal another file's retained preview.
+                // A pending selection may still be displaying the previously loaded file.
+                if files.selected_file != Some(index) || files.patch_loading {
+                    files.diff.update(cx, |diff, cx| diff.set_files([], cx));
+                    files.image = None;
+                    files.image_subscription = None;
+                    files.empty_patch = false;
+                }
+            }
             self.repository_preview = true;
         }
         self.select_source_file(self.view.source(), index, cx);
@@ -2818,6 +2832,131 @@ mod tests {
         });
         cx.run_until_parked();
         cx.update(|cx| assert!(app.read(cx).visible_error().is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn repository_tree_opens_the_requested_preview_without_revealing_cached_content(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        std::fs::write(root.join("alpha.rs"), "ALPHA_CONTENT\n").unwrap();
+        std::fs::write(root.join("beta.rs"), "BETA_CONTENT\n").unwrap();
+        std::fs::write(
+            root.join("image.png"),
+            include_bytes!("../tests/fixtures/images/sample.png"),
+        )
+        .unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "Preview fixture"]);
+        let repo = Repository::open(root).unwrap();
+        let commit = repo.history(0, None).unwrap().commits.remove(0);
+
+        // Both a cached text diff and a cached image must stay hidden at this boundary.
+        for previous in [0, 2] {
+            let changes = repo.commit_changes(&commit).unwrap();
+            let stats = repo.file_stats(&changes, Some(&commit)).unwrap();
+            let content = FileContent::load(&repo, &changes[previous], Some(&commit)).unwrap();
+            let (handle, app) = cx.update(|cx| {
+                gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                    cx.new(|cx| {
+                        let mut app = test_app(window, cx);
+                        app.view = View::Repositories;
+                        app.repository = Some(repo.clone());
+                        app.history.commits = vec![commit.clone()];
+                        app.history.selected_commit = Some(0);
+                        app.apply_changes(
+                            Source::History,
+                            PreparedChanges {
+                                changes,
+                                stats,
+                                preview: None,
+                            },
+                            cx,
+                        );
+                        app.history.files.selected_file = Some(previous);
+                        app.apply_file_result(Source::History, Ok(content), cx);
+                        app
+                    })
+                })
+                .unwrap()
+            });
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_frame(cx);
+                window.click("tree-file-1", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let app = app.read(cx);
+                assert!(app.repository_preview);
+                assert_eq!(app.history.files.selected_file, Some(1));
+                assert!(app.history.files.patch_loading);
+                assert!(app.history.files.diff.read(cx).files().is_empty());
+                assert!(app.history.files.image.is_none());
+                assert!(window.find_all("source").is_empty());
+                assert!(window.try_find("image-fit").is_none());
+            })
+            .unwrap();
+            cx.executor().advance_clock(FILE_SELECTION_DELAY);
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(
+                    app.read(cx).history.files.diff.read(cx).files()[0]
+                        .path()
+                        .as_str(),
+                    "beta.rs"
+                );
+                window.click("back-to-files", cx);
+                window.render_frame(cx);
+                window.click("tree-file-1", cx);
+                window.render_frame(cx);
+                assert!(!app.read(cx).history.files.patch_loading);
+                assert_eq!(
+                    app.read(cx).history.files.diff.read(cx).files()[0]
+                        .path()
+                        .as_str(),
+                    "beta.rs"
+                );
+
+                // Switching within the preview still preserves its contents while loading.
+                app.update(cx, |app, cx| app.select_file(0, cx));
+                assert_eq!(
+                    app.read(cx).history.files.diff.read(cx).files()[0]
+                        .path()
+                        .as_str(),
+                    "beta.rs"
+                );
+                window.click("back-to-files", cx);
+                window.render_frame(cx);
+                window.click("tree-file-0", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                // Reentering the same pending selection must not expose the previous file either.
+                assert!(app.read(cx).history.files.patch_loading);
+                assert!(app.read(cx).history.files.diff.read(cx).files().is_empty());
+                assert!(window.find_all("source").is_empty());
+            })
+            .unwrap();
+            cx.executor().advance_clock(FILE_SELECTION_DELAY);
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert_eq!(
+                    app.read(cx).history.files.diff.read(cx).files()[0]
+                        .path()
+                        .as_str(),
+                    "alpha.rs"
+                );
+            });
+        }
     }
 
     #[gpui_kit::test]

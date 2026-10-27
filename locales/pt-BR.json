@@ -91,7 +91,7 @@
   "language_short": "PT",
   "about": "Sobre o Patchlook",
   "about_version": "Versão {version}",
-  "about_description": "Um visualizador Git nativo e somente leitura. Revise alterações locais, explore o histórico de commits e compare código e imagens.",
+  "about_description": "Um visualizador Git nativo e somente leitura para navegar por repositórios, revisar alterações em arquivos e explorar o histórico de commits.",
   "report_issue": "Relatar um problema",
   "about_built_with": "Desenvolvido com Rust e GPUI Kit",
   "open_source_license": "Licença de código aberto"

@@ -91,7 +91,7 @@
   "language_short": "DE",
   "about": "Über Patchlook",
   "about_version": "Version {version}",
-  "about_description": "Ein nativer Git-Betrachter mit reinem Lesezugriff. Lokale Änderungen prüfen, den Commit-Verlauf erkunden und Code sowie Bilder vergleichen.",
+  "about_description": "Ein nativer Git-Betrachter mit reinem Lesezugriff zum Durchsuchen von Repositorys, Prüfen von Dateiänderungen und Erkunden des Commit-Verlaufs.",
   "report_issue": "Problem melden",
   "about_built_with": "Entwickelt mit Rust und GPUI Kit",
   "open_source_license": "Open-Source-Lizenz"
