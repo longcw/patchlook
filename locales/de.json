@@ -1,6 +1,7 @@
 {
   "app_name": "Patchlook",
   "open_repository": "Repository öffnen",
+  "remove_repository": "Repository aus der Liste zuletzt verwendeter Repositorys entfernen",
   "refresh": "Aktualisieren",
   "working_tree": "Änderungen",
   "history": "Verlauf",
@@ -22,8 +23,6 @@
   "copied": "Kopiert",
   "type_changed": "Typ geändert",
   "files": "Dateien",
-  "collapse_file": "Datei einklappen",
-  "expand_file": "Datei ausklappen",
   "commits": "Commits",
   "load_more": "Ältere Commits laden",
   "search_commits": "Commits suchen",
@@ -94,5 +93,13 @@
   "about_description": "Ein nativer Git-Betrachter mit reinem Lesezugriff zum Durchsuchen von Repositorys, Prüfen von Dateiänderungen und Erkunden des Commit-Verlaufs.",
   "report_issue": "Problem melden",
   "about_built_with": "Entwickelt mit Rust und GPUI Kit",
-  "open_source_license": "Open-Source-Lizenz"
+  "open_source_license": "Open-Source-Lizenz",
+  "open_with": "Öffnen mit…",
+  "open_working_file": "Datei im Arbeitsverzeichnis",
+  "open_previous_version": "Version vor dem Löschen",
+  "system_default_application": "Standardanwendung",
+  "other_application": "Andere Anwendung…",
+  "select_application": "Anwendung auswählen",
+  "open_file_failed": "Datei kann nicht geöffnet werden",
+  "applications_failed": "Anwendungen können nicht aufgelistet werden"
 }

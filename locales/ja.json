@@ -1,6 +1,7 @@
 {
   "app_name": "Patchlook",
   "open_repository": "リポジトリを開く",
+  "remove_repository": "最近のリストからリポジトリを削除",
   "refresh": "再読み込み",
   "working_tree": "変更",
   "history": "履歴",
@@ -22,8 +23,6 @@
   "copied": "コピー",
   "type_changed": "種類の変更",
   "files": "ファイル",
-  "collapse_file": "ファイルを折りたたむ",
-  "expand_file": "ファイルを展開",
   "commits": "コミット",
   "load_more": "以前のコミットを読み込む",
   "search_commits": "コミットを検索",
@@ -94,5 +93,13 @@
   "about_description": "リポジトリ、ファイルの変更、コミット履歴を確認するための、ネイティブの読み取り専用 Git ビューアー。",
   "report_issue": "問題を報告",
   "about_built_with": "Rust と GPUI Kit で構築",
-  "open_source_license": "オープンソースライセンス"
+  "open_source_license": "オープンソースライセンス",
+  "open_with": "アプリケーションで開く…",
+  "open_working_file": "作業ツリーのファイル",
+  "open_previous_version": "削除前のバージョン",
+  "system_default_application": "システムの既定アプリ",
+  "other_application": "その他のアプリ…",
+  "select_application": "アプリケーションを選択",
+  "open_file_failed": "ファイルを開けません",
+  "applications_failed": "アプリケーション一覧を取得できません"
 }

@@ -22,10 +22,11 @@ use gpui_kit::{
     *,
 };
 use patchlook::{
+    external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
     git::{Branch, Change, Commit, DiffStats, Repository},
     preferences::{Appearance, Language, Layout, Preferences},
 };
-use std::{ops::Range, path::PathBuf, time::Duration};
+use std::{ops::Range, path::PathBuf, sync::Arc, time::Duration};
 
 const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -197,6 +198,7 @@ enum HistoryRequest {
 pub struct Patchlook {
     preferences: Preferences,
     about: Entity<crate::about::AboutPanel>,
+    external_files: Vec<tempfile::TempDir>,
     #[cfg(test)]
     preferences_directory: tempfile::TempDir,
     repository: Option<Repository>,
@@ -258,6 +260,7 @@ impl Patchlook {
             history: HistoryState::new(preferences.layout, cx),
             preferences,
             about: cx.new(crate::about::AboutPanel::new),
+            external_files: Vec::new(),
             #[cfg(test)]
             preferences_directory: tempfile::tempdir().unwrap(),
             repository: None,
@@ -479,6 +482,46 @@ impl Patchlook {
         if let Some(repo) = &self.repository {
             self.load_repository(repo.root.clone(), cx);
         }
+    }
+
+    fn remove_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
+        let Some(index) = self.repository.as_ref().and_then(|repo| {
+            self.preferences
+                .recent_repositories
+                .iter()
+                .position(|entry| entry.path == repo.root)
+        }) else {
+            return;
+        };
+        self.preferences.recent_repositories.remove(index);
+        self.preferences.repository = None;
+        let next = self
+            .preferences
+            .recent_repositories
+            .get(index)
+            .or_else(|| self.preferences.recent_repositories.last())
+            .map(|entry| entry.path.clone());
+
+        self.load_task = None;
+        self.repository = None;
+        self.branch.clear();
+        self.branches.clear();
+        self.branch_scroll = UniformListScrollHandle::new();
+        self.working = ChangeState::new(self.preferences.layout, cx);
+        self.history = HistoryState::new(self.preferences.layout, cx);
+        self.repository_preview = false;
+        self.reset_copy_feedback();
+        self.error = None;
+        self.history_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.save_preferences();
+        if let Some(path) = next {
+            self.load(path, cx);
+        }
+        cx.notify();
     }
 
     fn switch_view(&mut self, view: View, cx: &mut Context<Self>) {
@@ -1033,6 +1076,36 @@ fn icon_button(id: &'static str, icon: IconName, label: &'static str) -> Button 
         .accessibility_label(tr(label))
 }
 
+fn application_menu_item(
+    name: impl Into<SharedString>,
+    icon: Option<ApplicationIcon>,
+    fallback: IconName,
+) -> PopupMenuItem {
+    let name = name.into();
+    let image: Option<ImageSource> = icon.map(|icon| match icon {
+        ApplicationIcon::Png(bytes) => Arc::new(Image::from_bytes(ImageFormat::Png, bytes)).into(),
+        ApplicationIcon::File(path) => path.into(),
+    });
+    PopupMenuItem::element(move |_, _| {
+        let icon = match &image {
+            Some(image) => img(image.clone())
+                .size(px(16.))
+                .object_fit(ObjectFit::Contain)
+                .flex_none()
+                .into_any_element(),
+            None => Icon::new(fallback).size(px(16.)).into_any_element(),
+        };
+        h_flex()
+            .id(name.clone())
+            .test_support()
+            .role(accesskit::Role::Label)
+            .aria_label(name.clone())
+            .gap_2()
+            .child(icon)
+            .child(name.clone())
+    })
+}
+
 fn toolbar_divider(cx: &App) -> Div {
     div()
         .flex_none()
@@ -1090,6 +1163,132 @@ impl Patchlook {
                                 }),
                         )
                     },
+                )
+            })
+    }
+
+    fn external_file_target(&self) -> Option<FileToOpen> {
+        let files = self.active_files();
+        if self.loading
+            || files.files_loading
+            || files.patch_loading
+            || (self.view.source() == Source::History && self.history.loading)
+        {
+            return None;
+        }
+        Some(FileToOpen {
+            repository: self.repository.clone()?,
+            change: files.changes.get(files.selected_file?)?.clone(),
+            commit: self.current_commit().cloned(),
+        })
+    }
+
+    fn open_external(&mut self, target: FileToOpen, application: OpenWith, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { target.launch(&application) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(Some(directory)) => this.external_files.push(directory),
+                    Ok(None) => {}
+                    Err(error) => {
+                        this.error = Some(format!("{}: {error:#}", tr("open_file_failed")))
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn choose_external_program(&mut self, target: FileToOpen, cx: &mut Context<Self>) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(tr("select_application").into()),
+        });
+        cx.spawn(async move |this, cx| match prompt.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(program) = paths.into_iter().next() {
+                    let _ = this.update(cx, |this, cx| {
+                        this.open_external(target, OpenWith::Program(program), cx)
+                    });
+                }
+            }
+            Ok(Err(error)) => {
+                let _ = this.update(cx, |this, cx| {
+                    this.error = Some(format!("{}: {error:#}", tr("open_file_failed")));
+                    cx.notify();
+                });
+            }
+            _ => {}
+        })
+        .detach();
+    }
+
+    fn open_with_menu(&self, cx: &Context<Self>) -> impl IntoElement {
+        let target = self.external_file_target();
+        let app = cx.entity().downgrade();
+        icon_button("open-with", IconName::ExternalLink, "open_with")
+            .disabled(target.is_none())
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, cx| {
+                let Some(target) = target.clone() else {
+                    return menu;
+                };
+                menu = menu
+                    .min_w(px(220.))
+                    .max_h(px(360.))
+                    .scrollable(true)
+                    .label(tr(if target.change.status == 'D' {
+                        "open_previous_version"
+                    } else {
+                        "open_working_file"
+                    }));
+                let mut choices = vec![(
+                    tr("system_default_application").to_owned(),
+                    OpenWith::Default,
+                    None,
+                )];
+                match applications_for(&target.path()) {
+                    Ok(applications) => {
+                        choices.extend(applications.into_iter().map(|application| {
+                            (
+                                application.name,
+                                OpenWith::Recommended(application.id),
+                                application.icon,
+                            )
+                        }))
+                    }
+                    Err(error) => {
+                        let _ = app.update(cx, |this, cx| {
+                            this.error = Some(format!("{}: {error:#}", tr("applications_failed")));
+                            cx.notify();
+                        });
+                    }
+                }
+                for (name, application, icon) in choices {
+                    let app = app.clone();
+                    let target = target.clone();
+                    menu = menu.item(
+                        application_menu_item(name, icon, IconName::Monitor).on_click(
+                            move |_, _, cx| {
+                                let _ = app.update(cx, |this, cx| {
+                                    this.open_external(target.clone(), application.clone(), cx)
+                                });
+                            },
+                        ),
+                    );
+                }
+                let app = app.clone();
+                menu.separator().item(
+                    application_menu_item(tr("other_application"), None, IconName::FolderOpen)
+                        .on_click(move |_, _, cx| {
+                            let _ = app.update(cx, |this, cx| {
+                                this.choose_external_program(target.clone(), cx)
+                            });
+                        }),
                 )
             })
     }
@@ -1157,9 +1356,6 @@ impl Patchlook {
                         ),
                 )
                 .child(div().flex_1())
-                .child(icon_button("about", IconName::Info, "about").on_click(
-                    cx.listener(|this, _, window, cx| this.show_about(&About, window, cx)),
-                ))
                 .child(self.language_menu(cx))
                 .child({
                     let (icon, current) = appearance_label(self.preferences.appearance);
@@ -1201,6 +1397,14 @@ impl Patchlook {
                             .xsmall()
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_repository(&OpenRepository, window, cx)
+                            })),
+                    )
+                    .child(
+                        icon_button("remove-repository", IconName::Minus, "remove_repository")
+                            .xsmall()
+                            .disabled(self.repository.is_none() || self.loading)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.remove_repository(window, cx)
                             })),
                     ),
             )
@@ -1465,28 +1669,30 @@ impl Patchlook {
 
     fn diff_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let file = self.active_files().diff.read(cx).files().first();
-        let path = file.map(|file| file.path().clone());
-        let title = self
+        let image = self
             .active_files()
             .image
             .as_ref()
-            .map(|image| image.read(cx).title().to_owned())
+            .map(|image| image.read(cx));
+        let selected_path = self
+            .active_files()
+            .selected_file
+            .and_then(|i| self.active_files().changes.get(i))
+            .map(|change| change.path.as_path());
+        let path = image
+            .map(ImageDiff::path)
+            .or_else(|| file.map(|file| std::path::Path::new(file.path().as_str())))
+            .or(selected_path);
+        let title = image
+            .map(|image| image.title().to_owned())
             .or_else(|| {
                 file.map(|file| match (file.original_path(), file.modified_path()) {
                     (Some(old), Some(new)) if old != new => format!("{old} → {new}"),
                     _ => file.path().to_string(),
                 })
             })
-            .or_else(|| {
-                self.active_files()
-                    .selected_file
-                    .and_then(|i| self.active_files().changes.get(i))
-                    .map(|change| change.path.display().to_string())
-            });
+            .or_else(|| selected_path.map(|path| path.display().to_string()));
         let folded_context = self.active_files().diff.read(cx).has_collapsed_context();
-        let collapsed = path
-            .as_ref()
-            .is_some_and(|path| self.active_files().diff.read(cx).is_file_collapsed(path));
         h_flex()
             .flex_none()
             .h(px(32.))
@@ -1505,26 +1711,7 @@ impl Patchlook {
                 )
             })
             .when_some(path, |row, path| {
-                row.child(
-                    icon_button(
-                        "collapse-file",
-                        if collapsed {
-                            IconName::ChevronRight
-                        } else {
-                            IconName::ChevronDown
-                        },
-                        if collapsed {
-                            "expand_file"
-                        } else {
-                            "collapse_file"
-                        },
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.active_files().diff.update(cx, |diff, cx| {
-                            diff.set_file_collapsed(&path, !diff.is_file_collapsed(&path), cx)
-                        });
-                    })),
-                )
+                row.child(self.open_with_menu(cx)).child(file_icon(path))
             })
             .child(
                 div()
@@ -1599,10 +1786,10 @@ impl Patchlook {
                             "collapse_context"
                         },
                     )
-                    .when(file.is_some() && !collapsed, |button| {
+                    .when(file.is_some(), |button| {
                         button.text_color(cx.theme().muted_foreground)
                     })
-                    .disabled(file.is_none() || collapsed)
+                    .disabled(file.is_none())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.active_files().diff.update(cx, |diff, cx| {
                             if diff.has_collapsed_context() {
@@ -2409,7 +2596,7 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use gpui_kit::component::scroll::ScrollbarHandle;
-    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
     use patchlook::git::Area;
 
     #[test]
@@ -2487,6 +2674,7 @@ mod tests {
             history: HistoryState::new(Layout::Split, cx),
             preferences: Preferences::default(),
             about: cx.new(crate::about::AboutPanel::new),
+            external_files: Vec::new(),
             preferences_directory: tempfile::tempdir().unwrap(),
             repository: None,
             branch: "main".into(),
@@ -2570,7 +2758,11 @@ mod tests {
             assert!(window.try_find("about-surface").is_none());
             assert_eq!(window.focused(cx), Some(app.read(cx).focus.clone()));
             window.render_frame(cx);
-            window.click("about", cx);
+            window.dispatch_action(Box::new(About), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.find("about-surface").visible());
         })
@@ -2598,7 +2790,7 @@ mod tests {
         .unwrap();
         for dismissal in ["button", "escape", "backdrop"] {
             cx.update_window(handle, |_, window, cx| {
-                window.click("about", cx);
+                window.dispatch_action(Box::new(About), cx);
                 window.render_frame(cx);
             })
             .unwrap();
@@ -2670,6 +2862,182 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[gpui_kit::test]
+    fn open_with_menu_offers_program_selection_and_waits_for_the_visible_file(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        git(directory.path(), &["init", "-b", "main"]);
+        std::fs::write(directory.path().join("file.txt"), "Working file").unwrap();
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.load(directory.path().to_owned(), cx);
+                    app
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).external_file_target().unwrap().change.path,
+                PathBuf::from("file.txt")
+            );
+            window.click("open-with", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find_by_label(tr("system_default_application"))
+                    .visible()
+            );
+            // Recommended apps vary by machine; Up wraps to the final "Other" item.
+            window.press("up", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(|options| {
+            assert!(options.files && !options.multiple);
+            None
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.external_files.is_empty());
+                app.active_files_mut().patch_loading = true;
+                assert!(app.external_file_target().is_none());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("open-with", cx);
+            assert!(
+                window
+                    .try_find_by_label(tr("system_default_application"))
+                    .is_none()
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn removing_repositories_persists_the_list_and_clears_their_content(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let repositories = ["alpha", "beta", "gamma"].map(|name| {
+            let path = directory.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            git(&path, &["init", "-b", "main"]);
+            std::fs::write(path.join("file.txt"), name).unwrap();
+            git(&path, &["add", "."]);
+            git(&path, &["commit", "-qm", "Initial"]);
+            std::fs::write(path.join("file.txt"), "Working change").unwrap();
+            Repository::open(&path).unwrap()
+        });
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    for repo in &repositories {
+                        app.preferences.remember_repository(repo.root.clone());
+                    }
+                    app.load(repositories[1].root.clone(), cx);
+                    app
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(!app.working.changes.is_empty());
+                app.switch_view(View::Repositories, cx);
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(!app.history.commits.is_empty());
+                app.history.query = "old search".into();
+                app.history_search
+                    .update(cx, |input, cx| input.set_value("old search", window, cx));
+            });
+        })
+        .unwrap();
+
+        // Remove a middle entry, then the last entry, then the only remaining entry.
+        for (removed, next, remaining) in [(1, Some(2), 2), (2, Some(0), 1), (0, None, 0)] {
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_frame(cx);
+                assert!(window.try_find("about").is_none());
+                assert!(
+                    window.find("add-repository").bounds().right()
+                        <= window.find("remove-repository").bounds().left()
+                );
+                assert_eq!(
+                    app.read(cx).repository.as_ref().unwrap().root,
+                    repositories[removed].root
+                );
+                window.click("remove-repository", cx);
+                window.render_frame(cx);
+                let state = app.read(cx);
+                assert!(state.repository.is_none());
+                assert!(state.working.changes.is_empty());
+                assert!(state.history.commits.is_empty());
+                assert!(state.history.query.is_empty());
+                assert!(state.history_search.read(cx).value().is_empty());
+                assert!(state.branches.is_empty());
+                assert_eq!(state.preferences.recent_repositories.len(), remaining);
+                // Disabled both while the replacement loads and when nothing is selected.
+                window.click("remove-repository", cx);
+                assert_eq!(
+                    app.read(cx).preferences.recent_repositories.len(),
+                    remaining
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let state = app.read(cx);
+                let next_path = next.map(|index| repositories[index].root.clone());
+                assert_eq!(
+                    state.repository.as_ref().map(|repo| repo.root.clone()),
+                    next_path
+                );
+                assert_eq!(state.preferences.repository, next_path);
+                assert_eq!(state.history.commits.len(), usize::from(next.is_some()));
+                assert!(state.visible_error().is_none());
+                let saved: Preferences = serde_json::from_slice(
+                    &std::fs::read(state.preferences_directory.path().join("preferences.json"))
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(saved.repository, next_path);
+                assert_eq!(saved.recent_repositories.len(), remaining);
+                assert!(
+                    !saved
+                        .recent_repositories
+                        .iter()
+                        .any(|entry| entry.path == repositories[removed].root)
+                );
+            });
+            assert!(repositories[removed].root.join(".git").is_dir());
+            assert_eq!(
+                std::fs::read_to_string(repositories[removed].root.join("file.txt")).unwrap(),
+                "Working change"
+            );
+        }
     }
 
     #[gpui_kit::test]
@@ -3054,7 +3422,7 @@ mod tests {
                 scroll.offset().y < -px(20.),
                 "the scrollbar at the pane edge must receive the click"
             );
-            let header = window.find("collapse-file").bounds();
+            let header = window.find("next-file").bounds();
             app.update(cx, |app, cx| app.select_file(1, cx));
             assert!(app.read(cx).active_files().patch_loading);
             assert_eq!(
@@ -3064,7 +3432,7 @@ mod tests {
                 "current.rs"
             );
             window.render_frame(cx);
-            assert_eq!(header, window.find("collapse-file").bounds());
+            assert_eq!(header, window.find("next-file").bounds());
             assert!(
                 window
                     .find_all("source")

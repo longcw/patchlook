@@ -1,6 +1,7 @@
 {
   "app_name": "Patchlook",
   "open_repository": "저장소 열기",
+  "remove_repository": "최근 목록에서 저장소 제거",
   "refresh": "새로 고침",
   "working_tree": "변경",
   "history": "기록",
@@ -22,8 +23,6 @@
   "copied": "복사",
   "type_changed": "유형 변경",
   "files": "파일",
-  "collapse_file": "파일 접기",
-  "expand_file": "파일 펼치기",
   "commits": "커밋",
   "load_more": "이전 커밋 불러오기",
   "search_commits": "커밋 검색",
@@ -94,5 +93,13 @@
   "about_description": "저장소를 탐색하고 파일 변경 사항과 커밋 기록을 확인하는 네이티브 읽기 전용 Git 뷰어입니다.",
   "report_issue": "문제 보고",
   "about_built_with": "Rust와 GPUI Kit로 제작",
-  "open_source_license": "오픈 소스 라이선스"
+  "open_source_license": "오픈 소스 라이선스",
+  "open_with": "다음으로 열기…",
+  "open_working_file": "작업 트리 파일",
+  "open_previous_version": "삭제 전 버전",
+  "system_default_application": "시스템 기본 앱",
+  "other_application": "다른 앱…",
+  "select_application": "앱 선택",
+  "open_file_failed": "파일을 열 수 없습니다",
+  "applications_failed": "앱 목록을 불러올 수 없습니다"
 }

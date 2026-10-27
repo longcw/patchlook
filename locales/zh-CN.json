@@ -1,6 +1,7 @@
 {
   "app_name": "Patchlook",
   "open_repository": "打开仓库",
+  "remove_repository": "从最近列表移除仓库",
   "refresh": "刷新",
   "working_tree": "改动",
   "history": "历史",
@@ -22,8 +23,6 @@
   "copied": "复制",
   "type_changed": "类型变化",
   "files": "文件",
-  "collapse_file": "收起文件",
-  "expand_file": "展开文件",
   "commits": "提交",
   "load_more": "加载更早的提交",
   "search_commits": "搜索提交",
@@ -94,5 +93,13 @@
   "about_description": "原生、只读的 Git 查看器，用于浏览仓库、查看文件变更与提交历史。",
   "report_issue": "反馈问题",
   "about_built_with": "使用 Rust 和 GPUI Kit 构建",
-  "open_source_license": "开源协议"
+  "open_source_license": "开源协议",
+  "open_with": "打开方式…",
+  "open_working_file": "工作区文件",
+  "open_previous_version": "删除前的版本",
+  "system_default_application": "系统默认程序",
+  "other_application": "其他程序…",
+  "select_application": "选择应用程序",
+  "open_file_failed": "无法打开文件",
+  "applications_failed": "无法获取应用程序列表"
 }

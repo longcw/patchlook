@@ -1,67 +1,63 @@
 # Project State
 
 ## Purpose and Boundaries
-- Patchlook 是 Rust / GPUI / GPUI Kit 实现的本地 Git 桌面查看器，目标平台为 macOS、Windows、Linux；采用 MIT 协议，不依赖后台服务或浏览器插件。
-- 产品当前只读：查看工作区、暂存区、分支和提交，不执行暂存、提交、checkout、fetch、pull 或 push；分支浏览使用本地已有引用，“改动”页始终对应实际工作区，外部改动通过手动刷新重新读取。
-- 文本 diff 要求 UTF-8；支持的图片独立预览，其他二进制文件只展示变化信息。运行环境需要 PATH 中可用的 Git，构建与平台依赖见 `docs/development.md`。
+- Patchlook 是 Rust／GPUI Kit 实现的本地 Git 查看器，目标为 macOS、Windows、Linux，采用 MIT 协议，无后台服务。只读浏览工作区、暂存区、分支与提交，不执行暂存、提交、checkout、fetch、pull 或 push；外部变更通过手动刷新读取。
+- 文本 diff 要求 UTF-8；支持的图片独立预览，其他二进制只展示变化信息。运行需要 PATH 中可用的 Git。
 
 ## Current Architecture
-- 显示名称为 `Patchlook`，Cargo package 与可执行程序名为 `patchlook`，应用标识为 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键，`src/lib.rs` 导出 Git 与设置模块；`src/about.rs` 的窗口级 AboutPanel 复用 Kit Base Dialog 和 Presence，在应用内居中展示关于页／协议正文；淡出结束才卸载遮罩并恢复焦点，遵循系统减少动态效果设置，版本／仓库／协议标识取 Cargo 构建元数据。
-- `src/git.rs` 的 `Repository` 封装 Git CLI，直接传递参数、不经过 shell；通过 NUL 分隔结果保留特殊路径，并关闭可选锁、外部 diff 和 textconv 等相关行为。
-- `src/app.rs` 的 `Patchlook` 管理共享仓库信息与页面展示；`ChangeState` 分别持有工作区和历史文件的列表、选择、滚动、树、diff、错误及任务，`HistoryState` 管理 Repos／History 共用的提交、搜索与分页。只保留当前仓库的两组状态；已加载 Tab 切换不读 Git，历史预览按需加载一次，隐藏页的异步结果仍写回所属状态。切仓库或手动刷新成功后替换当前页并使另一组状态失效；浏览分支只重载历史。新列表及首个 diff 在后台准备并一次替换，失败保留旧内容。
-- 文本 patch 包含完整上下文，由 Kit 的 `DiffFile` / `DiffState` 解析和渲染；布局、上下文折叠、代码选择和虚拟滚动依赖 Kit。图片经 `Repository::file_versions` 读取相同基准的字节，由 `src/image_diff.rs` 解码、缩放和渲染。
-- `src/change_tree.rs` 的 `ChangeTree` 将变更构造成 Kit 树控件，压缩单一路径目录，按原始文件索引保存选择身份；同一路径的暂存／未暂存条目及行数仍各自独立。
-- `src/preferences.rs` 以 Cargo 包名 `patchlook` 确定系统应用配置目录，读写 `preferences.json`，保存外观、diff 模式、语言、文件列表模式、行数显示、自动换行、提交说明开关、最近仓库、各仓库浏览分支和 Repos 侧栏高度比例；读取与显式保存分离，写入经临时文件重命名完成，首次启动使用新目录的默认设置。
-- `src/file_icons.rs` 为目录树和平铺列表提供同一文件类型映射与嵌入资源；`assets/file-icons/` 是 Material Icon Theme 的 35 个 MIT 许可 SVG，随包附带许可证，未知类型使用通用文档图标。
-- `src/strings.rs` 使用 `locales/*.json` 的九种语言资源，并与 Kit 共用当前 locale；`themes/*.json` 提供统一配色。窗口重新激活时重读系统语言，系统外观变化由订阅响应。
-- `.github/workflows/desktop.yml` 在 main／PR 上执行三平台检查和开发打包；与 Cargo 版本一致的 v 标签触发 macOS Developer ID 签名、公证及票据验证，三平台通过后创建 Release 草稿。`scripts/package.py` 统一生成包名和图标，默认 ad-hoc，显式参数启用正式签名及钥匙串公证凭据；失败不会退回开发包。手动运行填写 `notary_submission_id` 时仅查询既有 Apple 提交状态与完成后的日志，不构建或上传。
+- Cargo 包／二进制为 `patchlook`，应用标识 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键。
+- `src/git.rs` 封装 Git CLI，参数不经过 shell；NUL 分隔保留特殊路径，关闭可选锁、外部 diff 和 textconv。
+- `src/app.rs` 管理共享仓库与页面。`ChangeState` 分别持有工作区／历史的列表、选择、树、滚动、diff、错误与任务；`HistoryState` 管理 Repos／History 共用的提交、搜索和分页。只缓存当前仓库，隐藏页结果写回所属状态；已加载 Tab 切换不读 Git。切仓库／刷新成功后替换当前页并使另一组状态失效，浏览分支只重载历史。
+- 新列表、统计与首个预览在后台一起准备，再替换可见内容；读取失败保留快照，预览失败不丢列表。文本 patch 含完整上下文，解析、选择与虚拟滚动由 Kit `DiffFile`／`DiffState` 提供；图片经 `Repository::file_versions` 和 `src/image_diff.rs` 读取、解码、渲染。
+- `src/external_open.rs` 封装外部打开：macOS 使用 NSWorkspace／UTType，Windows 使用 Shell，Linux 使用 GIO。推荐程序携带系统图标，无法取得时用通用图标。普通文件打开工作区最新路径；删除条目读取对应 diff 的原版本到临时副本，由应用保留至退出，不恢复工作区。菜单捕获目标，切换加载期间禁用。
+- `src/change_tree.rs` 压缩单一路径目录，按原始文件索引保留身份；同路径的暂存／未暂存项独立。`src/file_icons.rs` 共用文件类型映射，内嵌 35 个 Material Icon Theme MIT SVG，未知类型用文档图标。
+- `src/preferences.rs` 在系统 `patchlook` 配置目录读写 `preferences.json`，读取与显式保存分离，写入通过临时文件重命名完成。
+- `src/strings.rs` 管理九语言资源并与 Kit 共用 locale；`themes/` 提供统一配色。窗口重新激活重读系统语言，系统外观通过订阅更新。
+- `src/about.rs` 复用 Kit Base Dialog／Presence，在窗口内居中显示关于页和协议；淡出结束才卸载遮罩、恢复焦点，遵循减少动态效果设置。版本、仓库与协议标识来自 Cargo 元数据。
+- `.github/workflows/desktop.yml` 在 main／PR 执行三平台检查和开发打包；匹配 Cargo 版本的 v 标签触发 macOS Developer ID 签名、公证和票据验证，三平台通过后创建 Release 草稿。`scripts/package.py` 默认 ad-hoc，正式签名失败不降级。手动工作流的 `notary_submission_id` 只查询既有 Apple 提交，不构建或上传。
 
 ## Project Conventions
-- GPUI 统一通过 `gpui_kit` 导入，复用其控件与主题；界面文案集中于 `locales/*.json`，各语言键及占位符须一致。
-- `Cargo.toml` 将 GPUI Kit 0.8.0 patch 到 fork 的固定 Git revision，`Cargo.lock` 随应用维护；当前锁定 `e2a084aedbd36212545cf6242cc1c58f4b834562`。补丁归属与升级步骤以 `docs/development.md` 的“GPUI Kit patches”为准，不提交本机 path override。
-- Git 基准是产品契约：未暂存比较索引与工作区，已暂存比较 HEAD 与索引；根提交按新增处理，合并提交比较第一父提交，历史与搜索续页固定在首次加载解析出的分支 tip；关键词按说明子串（忽略大小写）或 SHA 前缀匹配，流式扫描完整可达历史，每页最多保留 100 条与一条前瞻。参见 `Repository::history_filtered` 与 `Patchlook::load_history_page`。
-- 验证入口为 `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked`；Git 测试使用独立临时仓库。构建或依赖升级另执行 `cargo build --locked --release`；交互与滚动体验验收使用 Release 构建，Debug 构建仅用于开发调试。
-- 开发构建缓存沿用根 `target/`；dev 使用 `line-tables-only` 与 `split-debuginfo = "packed"`，test 继承 dev，增量编译保留。常用检查保持相同的测试依赖特性组合；改名或依赖来源迁移后的旧 Debug 产物可定期清理，步骤见 `docs/development.md` 的“Build cache”。
+- GPUI 统一从 `gpui_kit` 导入，复用控件与主题；界面文案集中于 `locales/*.json`，九语言键及占位符一致。
+- GPUI Kit 0.8.0 固定到 fork revision `e2a084aedbd36212545cf6242cc1c58f4b834562`；维护 `Cargo.lock`，不提交本机 path override。补丁归属和升级步骤见 `docs/development.md`。
+- Git 基准：未暂存为索引对工作区，暂存为 HEAD 对索引；根提交按新增，合并提交比较第一父提交。历史／搜索续页固定首次解析的分支 tip；关键词匹配提交说明子串（忽略大小写）或 SHA 前缀，流式扫描可达历史，每页最多 100 条加一条前瞻。
+- 检查：`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked`；构建／依赖变更另做 `cargo build --locked --release`，打包测试为 `python -m unittest discover -s scripts -p 'test_*.py'`。Git 和界面测试使用临时仓库／配置；交互验收使用 Release。
+- 缓存统一用根 `target/`，dev 为 `line-tables-only`＋`split-debuginfo = "packed"`，test 继承 dev，保留增量编译；常用检查保持同一测试依赖特性组合，清理步骤见开发文档。
 
 ## Implementation State
 ### Implemented
-- 仓库选择、最近仓库切换与本地／远程跟踪分支浏览；最近仓库按名称忽略大小写排序，同名按路径排序，访问不改变顺序。分支选择按仓库保存，不改变实际 HEAD、索引或工作区；Tab 切换保留选择、滚动、树展开状态、历史分页和搜索结果，Repos 与 History 不重复保存历史数据。Repos 的 Recent／Branches 默认等高，拖动结束保存比例，重启和窗口尺寸变化后按比例恢复。
-- 工作区分类变更、每页 100 条的提交历史与仓库三栏概览；Load more 是滚动列表尾部条目；未筛选提交数超过 20 条时底部常驻单行搜索框，搜索结果较少仍保留，按 Enter 或搜索按钮查询完整分支历史，清空恢复普通历史；Esc 取消搜索框焦点并保留查询。列表标题高亮匹配词，忽略大小写并保留 UTF-8 边界；SHA 前缀命中不高亮。提交说明可选择复制，右侧顶部按钮可显示／隐藏底部说明区（含 SHA 与作者信息），默认显示，开关状态跨页面与应用重启保留；短 SHA 可悬停查看、点击复制完整 SHA，并原地显示 Copied（随界面语言）2 秒后恢复。覆盖空仓库、根提交、重命名、冲突和 worktree 的读取路径。
-- 目录／平铺文件列表、目录展开收起、文件定位；左键先收起当前展开目录，否则选中父目录；右键先展开目录，否则选中下一可见条目；通过统一选中状态监听，鼠标、上下左右键及程序定位选中文件时均打开 diff。支持文件、折叠目录和列表总计的新增／删除行数；二进制文件不参与文本行数统计。目录树采用 22 px 紧凑行高，目录保持中性色；两种列表共用源文件类型图标并移除状态字母，平铺图标为 20 px、目录树为 16 px；文件名配色为修改／重命名蓝色、新增／复制绿色、删除灰色、冲突警示色。平铺列表根目录路径显示为 `.`。
-- 目录树的移动／重命名条目显示 `← 来源`，来源相对于目标目录；同名移动只显示原目录，改名同时显示原文件名。该标注独立于行数统计开关，悬停及读屏提供九语言的完整“移自”说明。
-- 并排／行内文本 diff、语法高亮、自动折行、同步横向滚动、选择复制、上下文逐处或全局展开收起，以及连续改动块计数；在 diff 详情内切换文件时保留已有标题和内容，直到替换结果就绪；Repos 从目录树进入另一文件时先清除旧文本／图片预览并显示目标文件的加载状态，同一文件已完成的预览仍直接复用；选中后等待 120 ms 再加载，连续选择取消旧任务，相同文件重复选中不重新加载。
-- PNG、JPEG、WebP、GIF、BMP、TIFF、ICO、SVG 前后版本预览，支持尺寸／大小信息、透明棋盘格、等比例适应窗口、1:1、缩放与面板内滚动。
-- 亮／暗／跟随系统外观、九种界面语言及跟随系统语言；文件列表模式、行数显示、自动换行和提交说明开关统一由 Preferences 保存，交互时落盘、启动时恢复。其他分栏尺寸、窗口位置大小、当前 Tab、选中项、滚动位置与搜索不持久化。可拖动侧栏、固定文件工具栏和虚拟滚动列表。
-
-- 关于页由顶部信息按钮或应用菜单打开，包含内嵌 logo、版本、九语言简介、MIT 协议、GitHub 与问题反馈链接；弹窗按内容实际高度垂直居中，关闭按钮／Esc／遮罩关闭均淡出；协议正文在同一弹窗内离线阅读与复制，根 LICENSE 与文件图标许可随三平台安装包分发。
+- 最近仓库按名称忽略大小写排序，同名按路径排序；访问不改变顺序。Recent 加／减号可添加、移除记录，移除后选择相邻仓库，最后一项清空内容，不删磁盘文件。浏览分支按仓库保存，不改变实际 HEAD；Changes 始终对应工作区。
+- Repos 三栏概览、Changes、History 共用上述状态；Tab 切换保留选择、滚动、目录展开和搜索，历史预览按需加载一次。Repos 的 Recent／Branches 默认等高，拖动结束保存比例，重启／缩放窗口后恢复。
+- 历史分页的 Load more 是尾部条目；未筛选提交超过 20 条时常驻搜索框，筛选后仍保留，Enter／搜索按钮查询完整分支，清空恢复普通历史，Esc 失焦。列表标题高亮匹配词并保留 UTF-8 边界，SHA 前缀不高亮。提交说明可复制、显示／隐藏；短 SHA 悬停、点击复制完整号，原地显示 Copied 两秒。
+- 文件列表支持目录和平铺、统计、键盘定位。左键先折叠再选父目录，右键先展开再选下一可见项；所有选中文件行为均打开 diff。目录行高 22 px，目录图标 16 px、平铺 20 px；文件名修改／重命名蓝色、新增／复制绿色、删除灰色、冲突警示色，根目录路径显示 `.`。移动／改名项显示相对来源 `← 来源`，同名移动只显示原目录，悬停／读屏提供完整说明。
+- 单文件文本 diff 支持并排／行内、语法与行内变化高亮、折行、同步横向滚动、选择复制、上下文展开／收起及改动块计数。顶栏显示文件类型图标与打开方式菜单（系统默认、推荐应用图标＋名称、其他程序），无整文件收起按钮。选择防抖 120 ms，连续选择取消旧任务；详情切文件保留旧预览至新内容就绪，Repos 目录进入另一文件先显示目标加载状态，已完成的同文件预览复用。
+- PNG、JPEG、WebP、GIF、BMP、TIFF、ICO、SVG 前后预览，含尺寸／大小、透明棋盘格、适应窗口、1:1、缩放与滚动。
+- 持久化外观、diff 模式、语言、列表模式、行数显示、折行、提交说明开关、最近仓库、各仓库浏览分支、Repos 侧栏高度比例；其他分栏尺寸、窗口位置大小、Tab、选中项、滚动和搜索不持久化。
+- 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
-- [paused] 提交说明局部高亮与实时拖选：按用户决定不修改 Kit Base 层，等待上游支持／修复后再评估升级。当前 `SelectableText` 缺少局部高亮 API，拖选状态变化未订阅窗口刷新；详情文字高亮尚未实现，拖选期间选区不重绘的问题保留。已有列表标题匹配高亮独立完成。
+- [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
 暂无已确认的后续范围。
 
 ## Known Problems and Risks
-- P2 [risk]: 自定义 diff 布局、上下文交互和滚动修复依赖 Kit fork；升级时需核对上游已合入的修复，并保留消费方回归覆盖。证据：`Cargo.toml`、`docs/development.md` 的“GPUI Kit patches”、`tests/diff_layout.rs`、`tests/scroll_bounce.rs`。
+- P2 [risk]: diff 布局、上下文与滚动依赖 Kit fork；升级时核对上游合入情况，保留 `tests/diff_layout.rs`、`tests/scroll_bounce.rs` 的消费方回归。
 
 ## Open Decisions
-暂无待确认的决策记录。
+暂无待确认的决策。
 
 ## Verification
-- 2026-10-28，v0.1.1（`03499e8`）的 GitHub 运行 `40555348269` 全部通过：三平台格式、Clippy、46 项 Rust 测试、4 项 Python 打包测试、Release 构建与打包；main 和 v0.1.1 标签已推送。Release 草稿已生成，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz，尚未公开发布。
-- v0.1.1 macOS Developer ID 签名、Apple 公证、DMG／应用票据校验与 Gatekeeper 评估通过；公证提交 `316da02e-c4be-4e0e-9903-3cc1dbe4cc4a` 返回 Accepted。CI 正式包已下载至 `dist/`，外层归档 SHA256 与 GitHub 摘要一致，本地再次验证应用版本、许可证、签名、公证票据与 Gatekeeper 均通过。
-- 2026-10-28，格式、Clippy、46 项 Rust 测试、4 项 Python 打包测试及 Release 构建通过；覆盖 Git／搜索、选择防抖、Repos 目录树进入详情不显示旧文本／图片及待加载选择的重复进入、切换提交期间保留旧内容、已加载 Tab 无 Git 读取仍可切换、隐藏页异步结果归属、分支切换保留工作区、空搜索复用、提交说明开关不重载 diff、四项展示偏好默认值／落盘恢复、关于页入口／链接、居中与三种关闭方式的动画生命周期及焦点恢复、读取失败保留快照、预览错误不丢列表、Esc 失焦及分栏序列化／全新窗口恢复。macOS Release 已实测默认等分、两种列表类型图标与根目录路径，并核对跨 Tab 保留工作区文件、Repos／History 共用同一历史提交与 diff、放大的平铺图标；原生拖动工具报 `noWindowsAvailable`，未完成真实拖动后重启验收。此前历史分页、复制和高亮已实测。界面测试使用临时仓库与独立临时配置目录，已核对真实偏好文件不受测试影响；Release 重启已验证目录列表、行数显示、自动换行及隐藏提交说明恢复；关于页 logo、版本、居中布局、协议阅读及关闭已在 Release 预览核对。未量化帧耗时；Windows／Linux 未另做实机验收，Linux 包仍依赖构建系统动态库。
-- 2026-10-27 按新缓存配置清理并重建 Debug，格式检查、Clippy 和 32 项 Rust 测试通过；本机 `target` 从 14.45 GiB 降至 5.74 GiB，增量缓存 176.7 MiB。重复测试编译与 Release 构建均直接复用产物，Release 二进制校验和不变。本机缓存容量为当时测量值；Windows／Linux 未做同类磁盘占用测量。
+- v0.1.1（`03499e8`）云端运行 `40555348269` 三平台检查、46 项 Rust 测试、4 项打包测试、Release 构建及打包通过。macOS Developer ID 签名、公证、票据和 Gatekeeper 通过；正式包下载到 `dist/` 后核对摘要和签名。Release 草稿已生成，尚未公开。
+- 2026-10-28 最新功能改动：本地格式、Clippy、51 项 Rust 测试、4 项 Python 打包测试及 Release 构建通过。覆盖外部打开的最新工作区／删除前版本、缺失文件报错、程序选择与加载禁用、macOS 推荐图标，以及仓库移除的选择／落盘／磁盘保留；已有 Git、历史搜索、页面状态、预览切换、偏好与 About 回归仍通过。
+- macOS Release 实测类型图标、紧凑列表、Tab 复用、历史搜索、复制反馈、偏好重启恢复、About 居中和动画；外部打开已验证暂存项打开工作区最新内容、删除项通过“其他程序…”打开临时副本，应用图标与键盘菜单正常。原生拖动工具曾报 `noWindowsAvailable`，真实拖动后重启仍未验收；未量化帧耗时。
+- Windows／Linux 外部打开模块通过交叉类型检查和 Clippy，未做实机交互；Linux 交叉检查跳过本机 pkg-config，仅验证类型。CI／开发文档已加 GLib 开发包，Linux 安装包仍依赖构建系统动态库。
+- 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
 
 ## Source Pointers
-- `README.md` — 默认英文产品首页，包含产品标志、功能、安装、使用和快速构建入口。
-- `docs/development.md` — 平台依赖、开发验证、打包、签名发布和 Kit 补丁维护步骤。
-- `Cargo.toml`、`Cargo.lock` — Rust 版本要求、依赖来源和实际锁定版本。
-- `src/git.rs` — 只读仓库接口、diff 基准、路径解析、行数统计与真实 Git 仓库测试。
-- `src/app.rs` — 桌面状态、后台加载、页面与文件切换、界面回归。
-- `src/about.rs`、`LICENSE` — 关于页、构建元数据展示与离线 MIT 协议正文。
-- `src/change_tree.rs`、`src/image_diff.rs`、`src/file_icons.rs` — 目录树、图片预览、文件类型图标与资源的实现及测试。
-- `src/preferences.rs`、`src/strings.rs`、`locales/`、`themes/` — 持久化、语言与共享外观。
-- `tests/diff_layout.rs`、`tests/scroll_bounce.rs` — Kit 补丁的消费方布局、上下文与滚动回归。
-- `.github/workflows/desktop.yml`、`scripts/package.py`、`scripts/test_package.py` — 三平台验证、签名公证、Release 草稿与失败路径回归；Secrets 配置见 `docs/development.md`。
-- `assets/app-icon/` — 已选用的 `patchlook-v2.png` 为深灰底米白色分隔 P，1254×1254、带透明通道；macOS 打包从此源图生成 ICNS，已检查 16／32／48 像素缩略图。原版 `patchlook.png` 因小尺寸细节过密保留作对照；对应提示词记录内置 imagegen 来源。
+- `README.md`、`docs/development.md` — 产品介绍、依赖、验证、缓存、签名发布及 Kit 补丁。
+- `Cargo.toml`、`Cargo.lock` — 版本、构建配置及依赖来源。
+- `src/git.rs`、`src/external_open.rs` — Git／文件版本契约、系统应用关联及回归。
+- `src/app.rs`、`src/change_tree.rs`、`src/image_diff.rs`、`src/file_icons.rs` — 状态、界面、导航与预览。
+- `src/preferences.rs`、`src/strings.rs`、`locales/`、`themes/` — 设置、语言和样式。
+- `src/about.rs`、`LICENSE`、`assets/app-icon/` — About、许可证和正式图标源 `patchlook-v2.png`。
+- `tests/`、`scripts/test_package.py`、`scripts/package.py`、`.github/workflows/desktop.yml` — 验证和三平台打包发布。

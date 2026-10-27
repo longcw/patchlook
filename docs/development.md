@@ -18,7 +18,7 @@ On Ubuntu 24.04:
 sudo apt-get update
 sudo apt-get install -y gcc g++ clang cmake pkg-config \
   libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-  libssl-dev libzstd-dev libvulkan1
+  libssl-dev libzstd-dev libvulkan1 libglib2.0-dev
 ```
 
 ## Run and test

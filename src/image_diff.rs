@@ -14,7 +14,10 @@ use gpui_kit::{
     *,
 };
 use patchlook::git::{Change, FileVersions};
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 8.;
@@ -77,6 +80,7 @@ impl ImageVersion {
 }
 
 pub struct ImageVersions {
+    path: PathBuf,
     title: String,
     original: Option<ImageVersion>,
     modified: Option<ImageVersion>,
@@ -86,6 +90,7 @@ impl ImageVersions {
     pub fn decode(change: &Change, versions: FileVersions) -> Result<Self> {
         let old_path = change.previous_path.as_deref().unwrap_or(&change.path);
         Ok(Self {
+            path: change.path.clone(),
             title: if old_path != change.path {
                 format!("{} → {}", old_path.display(), change.path.display())
             } else {
@@ -123,6 +128,10 @@ impl ImageDiff {
 
     pub fn title(&self) -> &str {
         &self.versions.title
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.versions.path
     }
 
     fn fit_scale(&self) -> f32 {
@@ -434,6 +443,7 @@ mod tests {
                 |_, cx| {
                     cx.new(|_| {
                         ImageDiff::new(ImageVersions {
+                            path: "fixture.svg".into(),
                             title: "fixture.svg".into(),
                             original: Some(rectangle(1000, 800)),
                             modified: Some(rectangle(500, 400)),

@@ -1,6 +1,7 @@
 {
   "app_name": "Patchlook",
   "open_repository": "Open repository",
+  "remove_repository": "Remove repository from recent list",
   "refresh": "Refresh",
   "working_tree": "Changes",
   "history": "History",
@@ -22,8 +23,6 @@
   "copied": "Copied",
   "type_changed": "Type changed",
   "files": "Files",
-  "collapse_file": "Collapse file",
-  "expand_file": "Expand file",
   "commits": "Commits",
   "load_more": "Load earlier commits",
   "search_commits": "Search commits",
@@ -94,5 +93,13 @@
   "about_description": "A native, read-only Git viewer for browsing repositories, reviewing file changes, and exploring commit history.",
   "report_issue": "Report an issue",
   "about_built_with": "Built with Rust and GPUI Kit",
-  "open_source_license": "Open-source license"
+  "open_source_license": "Open-source license",
+  "open_with": "Open with…",
+  "open_working_file": "Working-tree file",
+  "open_previous_version": "Version before deletion",
+  "system_default_application": "System default application",
+  "other_application": "Other application…",
+  "select_application": "Choose an application",
+  "open_file_failed": "Unable to open file",
+  "applications_failed": "Unable to list applications"
 }

@@ -21,6 +21,7 @@ Inspect local changes, explore commit history, and compare file versions without
 - **Compare code** — switch between side-by-side and inline diffs, with syntax highlighting and changes highlighted within each line.
 - **Stay focused** — collapse unchanged sections, wrap long lines, or scroll both versions together.
 - **Compare images** — view versions side by side, fit them to the window, or zoom and pan to inspect details.
+- **Open in another app** — choose a system-recommended application or another program from the file header. Opens the latest working-tree file, or a temporary copy of the version before deletion for deleted files.
 - **Make it yours** — light, dark, and system themes, plus nine interface languages.
 
 ## Install
