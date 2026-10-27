@@ -24,11 +24,11 @@ sudo apt-get install -y gcc g++ clang cmake pkg-config \
 ## Run and test
 
 ```sh
-cargo run --locked
-cargo run --locked -- /path/to/repository
+cargo run --locked --release
+cargo run --locked --release -- /path/to/repository
 ```
 
-Quote repository paths that contain spaces.
+Quote repository paths that contain spaces. Use Release builds for UI and scrolling reviews so compiler optimizations are enabled.
 
 ```sh
 cargo fmt --all -- --check
@@ -38,6 +38,21 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
 Use `python` instead of `python3` on Windows. Git tests use isolated temporary repositories. The test suites cover repository reads, preferences and localization, tree and image behavior, diff layout and scrolling, and packaging failure paths.
+
+### Build cache
+
+Keep builds in the repository's default `target/` directory. The `dev` profile uses `debug = "line-tables-only"` and `split-debuginfo = "packed"`; tests inherit these settings. This retains file and line information for backtraces and keeps incremental compilation enabled. Full variable inspection requires a build with more debug information.
+
+Use the commands above consistently: Clippy and tests share the test dependency features, while application previews use Release. GPUI's `test-support` feature belongs to test builds. Changing dependency sources, features, profiles, compiler versions, or target directories can leave additional artifact variants behind.
+
+After a package rename or a dependency-source migration, reclaim obsolete development artifacts with:
+
+```sh
+cargo clean --profile dev --dry-run
+cargo clean --profile dev
+```
+
+This removes `target/debug` and preserves Release artifacts. The next development check or test rebuilds its dependencies, so use it for occasional cleanup rather than before every build.
 
 ## Package a local build
 

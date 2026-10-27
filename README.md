@@ -17,7 +17,7 @@ Inspect local changes, explore commit history, and compare file versions without
 ## Features
 
 - **Review changes** — inspect staged, unstaged, and untracked files, with added and deleted line counts.
-- **Explore history** — browse commits and local or remote-tracking branches, with full commit messages and a file tree.
+- **Explore history** — browse branches and commits, or search the full branch history by message or SHA prefix.
 - **Compare code** — switch between side-by-side and inline diffs, with syntax highlighting and changes highlighted within each line.
 - **Stay focused** — collapse unchanged sections, wrap long lines, or scroll both versions together.
 - **Compare images** — view versions side by side, fit them to the window, or zoom and pan to inspect details.
@@ -53,6 +53,7 @@ Text diffs require UTF-8. Supported images are shown as previews; other binary f
 | Refresh | `⌘ R` / `F5` | `Ctrl R` / `F5` |
 | Copy selection | `⌘ C` | `Ctrl C` |
 | Select all in the current diff pane | `⌘ A` | `Ctrl A` |
+| Navigate the file tree | Arrow keys | Arrow keys |
 | Quit | `⌘ Q` | `Ctrl Q` |
 
 ## Build from source
@@ -62,7 +63,7 @@ Install Rust 1.95+, Git, and the [platform build dependencies](https://github.co
 ```sh
 git clone https://github.com/worldtheater/patchlook.git
 cd patchlook
-cargo run --locked
+cargo run --locked --release
 ```
 
 See the [development guide](https://github.com/worldtheater/patchlook/blob/main/docs/development.md) for testing, packaging, releases, and GPUI Kit patches.

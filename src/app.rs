@@ -1,16 +1,18 @@
 use crate::{
-    change_tree::{ChangeTree, stats_label},
+    change_tree::{ChangeTree, file_status_color, stats_label},
+    file_icons::file_icon,
     image_diff::{ImageDiff, ImageVersions, image_format},
     strings::{area_label, language_name, tr},
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::base::TestSupportExt;
+use gpui_kit::base::{SelectableText, TestSupportExt};
 use gpui_kit::{
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, Theme, ThemeMode, TitleBar,
         button::{Button, ButtonCustomVariant, ButtonVariants},
         diff::{Diff, DiffChangeIndicator, DiffFile, DiffHunkSeparator, DiffMode, DiffState},
         h_flex,
+        input::{Input, InputEvent as TextInputEvent, InputState},
         menu::{DropdownMenu, PopupMenuItem},
         resizable::{h_resizable, resizable_panel, v_resizable},
         scroll::{Scrollbar, ScrollbarMode},
@@ -20,10 +22,14 @@ use gpui_kit::{
     *,
 };
 use patchlook::{
-    git::{Branch, Change, Commit, DiffStats, Repository, Snapshot},
+    git::{Branch, Change, Commit, DiffStats, Repository},
     preferences::{Appearance, Language, Layout, Preferences},
 };
-use std::path::PathBuf;
+use std::{ops::Range, path::PathBuf, time::Duration};
+
+const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
+const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
+const HISTORY_SEARCH_THRESHOLD: usize = 20;
 
 gpui_kit::actions!(patchlook, [OpenRepository, Refresh, Quit]);
 
@@ -34,38 +40,179 @@ enum View {
     History,
 }
 
+enum FileContent {
+    Text(Vec<DiffFile>),
+    Image(ImageVersions),
+}
+
+impl FileContent {
+    fn load(repo: &Repository, change: &Change, commit: Option<&Commit>) -> anyhow::Result<Self> {
+        if image_format(&change.path).is_some() {
+            Ok(Self::Image(ImageVersions::decode(
+                change,
+                repo.file_versions(change, commit)?,
+            )?))
+        } else {
+            Ok(Self::Text(DiffFile::parse(&repo.patch(change, commit)?)?))
+        }
+    }
+}
+
+/// Lists and their initial preview are prepared together before replacing visible content.
+struct PreparedChanges {
+    changes: Vec<Change>,
+    stats: Vec<Option<DiffStats>>,
+    preview: Option<anyhow::Result<FileContent>>,
+}
+
+impl PreparedChanges {
+    fn load(
+        repo: &Repository,
+        changes: Vec<Change>,
+        commit: Option<&Commit>,
+        preview: bool,
+    ) -> anyhow::Result<Self> {
+        let stats = repo.file_stats(&changes, commit)?;
+        let preview = changes
+            .first()
+            .filter(|_| preview)
+            .map(|change| FileContent::load(repo, change, commit));
+        Ok(Self {
+            changes,
+            stats,
+            preview,
+        })
+    }
+}
+
+/// Working changes and commit changes have independent lifetimes, selection and previews.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Working,
+    History,
+}
+
+impl View {
+    fn source(self) -> Source {
+        match self {
+            Self::Working => Source::Working,
+            Self::Repositories | Self::History => Source::History,
+        }
+    }
+}
+
+struct ChangeState {
+    loaded: bool,
+    changes: Vec<Change>,
+    file_stats: Vec<Option<DiffStats>>,
+    change_tree: Option<ChangeTree>,
+    total_stats: Option<DiffStats>,
+    file_scroll: UniformListScrollHandle,
+    selected_file: Option<usize>,
+    diff: Entity<DiffState>,
+    image: Option<Entity<ImageDiff>>,
+    image_subscription: Option<Subscription>,
+    _diff_subscription: Subscription,
+    files_loading: bool,
+    patch_loading: bool,
+    empty_patch: bool,
+    error: Option<String>,
+    load_task: Option<Task<()>>,
+    patch_task: Option<Task<()>>,
+}
+
+impl ChangeState {
+    fn new(layout: Layout, cx: &mut Context<Patchlook>) -> Self {
+        let diff = cx.new(|cx| DiffState::new([], cx).with_mode(diff_mode(layout)));
+        let subscription = cx.observe(&diff, |_, _, cx| cx.notify());
+        Self {
+            loaded: false,
+            changes: Vec::new(),
+            file_stats: Vec::new(),
+            change_tree: None,
+            total_stats: None,
+            file_scroll: UniformListScrollHandle::new(),
+            selected_file: None,
+            diff,
+            image: None,
+            image_subscription: None,
+            _diff_subscription: subscription,
+            files_loading: false,
+            patch_loading: false,
+            empty_patch: false,
+            error: None,
+            load_task: None,
+            patch_task: None,
+        }
+    }
+
+    fn cancel_pending(&mut self) {
+        self.load_task = None;
+        self.patch_task = None;
+        self.files_loading = false;
+        if self.patch_loading {
+            // A cancelled selection has not produced its preview yet.
+            self.selected_file = None;
+        }
+        self.patch_loading = false;
+    }
+}
+
+struct HistoryState {
+    files: ChangeState,
+    commits: Vec<Commit>,
+    selected_commit: Option<usize>,
+    has_more: bool,
+    revision: Option<String>,
+    query: String,
+    search_available: bool,
+    scroll: UniformListScrollHandle,
+    loading: bool,
+    load_task: Option<Task<()>>,
+}
+
+impl HistoryState {
+    fn new(layout: Layout, cx: &mut Context<Patchlook>) -> Self {
+        Self {
+            files: ChangeState::new(layout, cx),
+            commits: Vec::new(),
+            selected_commit: None,
+            has_more: false,
+            revision: None,
+            query: String::new(),
+            search_available: false,
+            scroll: UniformListScrollHandle::new(),
+            loading: false,
+            load_task: None,
+        }
+    }
+}
+
+enum HistoryRequest {
+    Branch(Option<String>),
+    Search,
+    More,
+}
+
 pub struct Patchlook {
     preferences: Preferences,
+    #[cfg(test)]
+    preferences_directory: tempfile::TempDir,
     repository: Option<Repository>,
     branch: String,
     branches: Vec<Branch>,
     repository_scroll: UniformListScrollHandle,
     branch_scroll: UniformListScrollHandle,
     view: View,
-    changes: Vec<Change>,
-    file_stats: Vec<Option<DiffStats>>,
-    change_tree: Option<ChangeTree>,
-    tree_file_list: bool,
-    show_file_stats: bool,
-    total_stats: Option<DiffStats>,
-    file_scroll: UniformListScrollHandle,
-    commit_scroll: UniformListScrollHandle,
-    commits: Vec<Commit>,
-    has_more: bool,
-    selected_commit: Option<usize>,
-    selected_file: Option<usize>,
-    diff: Entity<DiffState>,
-    image: Option<Entity<ImageDiff>>,
-    image_subscription: Option<Subscription>,
+    working: ChangeState,
+    history: HistoryState,
+    repository_preview: bool,
+    history_search: Entity<InputState>,
+    commit_copied: bool,
+    copy_feedback_task: Option<Task<()>>,
     loading: bool,
-    files_loading: bool,
-    patch_loading: bool,
-    empty_patch: bool,
-    soft_wrap: bool,
     error: Option<String>,
     load_task: Option<Task<()>>,
-    commit_task: Option<Task<()>>,
-    patch_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     focus: FocusHandle,
 }
@@ -78,9 +225,18 @@ impl Patchlook {
         };
         apply_appearance(preferences.appearance, window, cx);
         apply_language(preferences.language, cx);
-        let diff = cx.new(|cx| DiffState::new([], cx).with_mode(diff_mode(preferences.layout)));
+        let history_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr("search_commits_placeholder")));
         let subscriptions = vec![
-            cx.observe(&diff, |_, _, cx| cx.notify()),
+            cx.subscribe(&history_search, |this, input, event, cx| {
+                if matches!(event, TextInputEvent::PressEnter { .. })
+                    || (matches!(event, TextInputEvent::Change)
+                        && input.read(cx).value().is_empty()
+                        && !this.history.query.is_empty())
+                {
+                    this.submit_history_search(cx);
+                }
+            }),
             cx.observe_window_appearance(window, |this, window, cx| {
                 if this.preferences.appearance == Appearance::System {
                     Theme::sync_system_appearance(Some(window), cx);
@@ -89,42 +245,35 @@ impl Patchlook {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() && this.preferences.language == Language::System {
                     apply_language(Language::System, cx);
+                    this.history_search.update(cx, |input, cx| {
+                        input.set_placeholder(tr("search_commits_placeholder"), window, cx);
+                    });
                 }
             }),
         ];
         let initial = initial.or_else(|| preferences.repository.clone());
         let mut app = Self {
+            working: ChangeState::new(preferences.layout, cx),
+            history: HistoryState::new(preferences.layout, cx),
             preferences,
+            #[cfg(test)]
+            preferences_directory: tempfile::tempdir().unwrap(),
             repository: None,
             branch: String::new(),
             branches: vec![],
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
             view: View::Working,
-            changes: vec![],
-            file_stats: vec![],
-            change_tree: None,
-            tree_file_list: false,
-            show_file_stats: false,
-            total_stats: None,
-            file_scroll: UniformListScrollHandle::new(),
-            commit_scroll: UniformListScrollHandle::new(),
-            commits: vec![],
-            has_more: false,
-            selected_commit: None,
-            selected_file: None,
-            diff,
-            image: None,
-            image_subscription: None,
+            repository_preview: false,
+
+            history_search,
+
+            commit_copied: false,
+            copy_feedback_task: None,
             loading: false,
-            files_loading: false,
-            patch_loading: false,
-            empty_patch: false,
-            soft_wrap: true,
+
             error,
             load_task: None,
-            commit_task: None,
-            patch_task: None,
             _subscriptions: subscriptions,
             focus: cx.focus_handle(),
         };
@@ -136,7 +285,13 @@ impl Patchlook {
     }
 
     fn save_preferences(&mut self) {
-        if let Err(error) = self.preferences.write() {
+        #[cfg(not(test))]
+        let result = self.preferences.write();
+        #[cfg(test)]
+        let result = self
+            .preferences
+            .write_to(&self.preferences_directory.path().join("preferences.json"));
+        if let Err(error) = result {
             self.error = Some(format!("{}: {error:#}", tr("settings_failed")));
         }
     }
@@ -165,25 +320,40 @@ impl Patchlook {
         .detach();
     }
 
-    fn clear_file(&mut self, cx: &mut Context<Self>) {
-        self.patch_task = None;
-        self.selected_file = None;
-        self.patch_loading = false;
-        self.empty_patch = false;
-        self.image = None;
-        self.image_subscription = None;
-        self.diff.update(cx, |diff, cx| diff.set_files([], cx));
+    fn files_for(&self, source: Source) -> &ChangeState {
+        match source {
+            Source::Working => &self.working,
+            Source::History => &self.history.files,
+        }
     }
 
-    fn clear_detail(&mut self, cx: &mut Context<Self>) {
-        self.commit_task = None;
-        self.clear_file(cx);
-        self.changes.clear();
-        self.file_stats.clear();
-        self.change_tree = None;
-        self.total_stats = None;
-        self.selected_commit = None;
-        self.files_loading = false;
+    fn files_for_mut(&mut self, source: Source) -> &mut ChangeState {
+        match source {
+            Source::Working => &mut self.working,
+            Source::History => &mut self.history.files,
+        }
+    }
+
+    fn active_files(&self) -> &ChangeState {
+        self.files_for(self.view.source())
+    }
+
+    fn active_files_mut(&mut self) -> &mut ChangeState {
+        self.files_for_mut(self.view.source())
+    }
+
+    fn current_commit(&self) -> Option<&Commit> {
+        (self.view.source() == Source::History)
+            .then(|| {
+                self.history
+                    .selected_commit
+                    .and_then(|i| self.history.commits.get(i))
+            })
+            .flatten()
+    }
+
+    fn visible_error(&self) -> Option<&String> {
+        self.error.as_ref().or(self.active_files().error.as_ref())
     }
 
     fn viewed_branch(&self) -> Option<&str> {
@@ -204,86 +374,94 @@ impl Patchlook {
     }
 
     fn browse_branch(&mut self, reference: Option<String>, cx: &mut Context<Self>) {
-        if self.loading {
+        if self.loading
+            || (reference.as_deref() == self.viewed_branch()
+                && self.history.files.loaded
+                && !self.history.loading)
+        {
             return;
         }
-        if let Some(repo) = &self.repository {
-            let path = repo.root.clone();
-            self.preferences.set_viewed_branch(&path, reference);
-            self.save_preferences();
-            self.load(path, cx);
-        }
+        self.load_history_page(HistoryRequest::Branch(reference), cx);
     }
 
     fn load(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self
+            .repository
+            .as_ref()
+            .is_some_and(|repo| repo.root == path)
+        {
+            return;
+        }
+        self.load_repository(path, cx);
+    }
+
+    /// Opening/refreshing a repository replaces its two snapshots. Tab changes never call this.
+    fn load_repository(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.load_task = None;
-        self.clear_detail(cx);
-        self.commits.clear();
-        self.has_more = false;
+        self.working.cancel_pending();
+        self.history.files.cancel_pending();
+        self.history.load_task = None;
+        self.history.loading = false;
         self.loading = true;
         self.error = None;
-        let history = self.view != View::Working;
-        let preferences = self.preferences.clone();
+        let source = self.view.source();
+        let preview = self.view != View::Repositories;
+        let query = self.history.query.clone();
+        let reference = self.preferences.viewed_branch(&path).map(str::to_owned);
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     let repo = Repository::open(&path)?;
-                    let snapshot = repo.snapshot()?;
                     let branches = repo.branches()?;
-                    let reference = preferences.viewed_branch(&repo.root);
-                    let page = if history {
-                        let revision = match reference {
-                            Some(reference) => Some(
-                                branches
-                                    .iter()
-                                    .find(|branch| branch.reference == reference)
-                                    .ok_or_else(|| {
-                                        anyhow::anyhow!("{}: {reference}", tr("branch_missing"))
-                                    })?
-                                    .revision
-                                    .as_str(),
-                            ),
-                            None => None,
-                        };
-                        Some(repo.history(0, revision)?)
-                    } else {
-                        None
+                    let (branch, page, changes) = match source {
+                        Source::Working => {
+                            let snapshot = repo.snapshot()?;
+                            (snapshot.branch, None, snapshot.changes)
+                        }
+                        Source::History => {
+                            let branch = repo.branch_name()?;
+                            let page = repo.history_filtered(0, reference.as_deref(), &query)?;
+                            let changes = page
+                                .commits
+                                .first()
+                                .map(|commit| repo.commit_changes(commit))
+                                .transpose()?
+                                .unwrap_or_default();
+                            (branch, Some(page), changes)
+                        }
                     };
-                    let stats = if history {
-                        None
-                    } else {
-                        Some(repo.file_stats(&snapshot.changes, None)?)
-                    };
-                    anyhow::Ok((repo, snapshot, branches, page, stats))
+                    let commit = page.as_ref().and_then(|page| page.commits.first());
+                    let prepared = PreparedChanges::load(&repo, changes, commit, preview)?;
+                    anyhow::Ok((repo, branch, branches, page, prepared))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((repo, Snapshot { branch, changes }, branches, page, stats)) => {
+                    Ok((repo, branch, branches, page, prepared)) => {
+                        this.working = ChangeState::new(this.preferences.layout, cx);
+                        let query = std::mem::take(&mut this.history.query);
+                        this.history = HistoryState::new(this.preferences.layout, cx);
+                        this.history.query = query;
+                        this.repository_preview = false;
+                        this.reset_copy_feedback();
                         this.preferences.remember_repository(repo.root.clone());
                         this.repository = Some(repo);
                         this.branch = branch;
                         this.branches = branches;
-                        this.commit_scroll = UniformListScrollHandle::new();
-                        this.file_scroll = UniformListScrollHandle::new();
                         this.save_preferences();
                         if let Some(page) = page {
-                            this.commits = page.commits;
-                            this.has_more = page.has_more;
-                            if !this.commits.is_empty() {
-                                this.select_commit(0, cx);
-                            }
-                        } else {
-                            this.set_changes(changes, stats.unwrap(), cx);
-                            if !this.changes.is_empty() {
-                                this.select_file(0, cx);
-                            }
+                            this.history.revision = page.revision;
+                            this.history.commits = page.commits;
+                            this.history.has_more = page.has_more;
+                            this.history.search_available =
+                                this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
+                            this.history.selected_commit =
+                                (!this.history.commits.is_empty()).then_some(0);
                         }
+                        this.apply_changes(source, prepared, cx);
                     }
-                    Err(error) => {
-                        this.error = Some(format!("{}: {error:#}", tr("load_failed")));
-                    }
+                    Err(error) => this.error = Some(format!("{}: {error:#}", tr("load_failed"))),
                 }
                 cx.notify();
             });
@@ -293,7 +471,7 @@ impl Patchlook {
 
     pub fn refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(repo) = &self.repository {
-            self.load(repo.root.clone(), cx);
+            self.load_repository(repo.root.clone(), cx);
         }
     }
 
@@ -302,68 +480,153 @@ impl Patchlook {
             return;
         }
         self.view = view;
-        if let Some(repo) = &self.repository {
-            self.load(repo.root.clone(), cx);
+        if view == View::Repositories {
+            self.repository_preview = false;
         }
+        self.ensure_view_loaded(cx);
         cx.notify();
     }
 
-    fn load_more(&mut self, cx: &mut Context<Self>) {
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
-        if self.loading {
+    fn ensure_view_loaded(&mut self, cx: &mut Context<Self>) {
+        if self.repository.is_none() {
             return;
         }
-        self.loading = true;
-        let offset = self.commits.len();
-        let revision = self.commits.first().map(|commit| commit.id.clone());
-        self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { repo.history(offset, revision.as_deref()) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.loading = false;
-                match result {
-                    Ok(page) => {
-                        this.commits.extend(page.commits);
-                        this.has_more = page.has_more;
-                    }
-                    Err(error) => this.error = Some(format!("{error:#}")),
-                }
-                cx.notify();
-            });
-        }));
-        cx.notify();
+        match self.view.source() {
+            Source::Working if !self.working.loaded && !self.working.files_loading => {
+                self.load_working(cx);
+            }
+            Source::History if !self.history.files.loaded && !self.history.loading => {
+                let reference = self.viewed_branch().map(str::to_owned);
+                self.load_history_page(HistoryRequest::Branch(reference), cx);
+            }
+            Source::History if self.view == View::History && !self.history.files.files_loading => {
+                self.ensure_history_preview(cx);
+            }
+            _ => {}
+        }
     }
 
-    fn select_commit(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn load_working(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repository.clone() else {
             return;
         };
-        let commit = self.commits[index].clone();
-        self.clear_detail(cx);
-        self.selected_commit = Some(index);
-        self.files_loading = true;
-        self.error = None;
-        self.commit_task = Some(cx.spawn(async move |this, cx| {
+        self.working.files_loading = true;
+        self.working.error = None;
+        self.working.load_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let changes = repo.commit_changes(&commit)?;
-                    let stats = repo.file_stats(&changes, Some(&commit))?;
-                    anyhow::Ok((changes, stats))
+                    let snapshot = repo.snapshot()?;
+                    PreparedChanges::load(&repo, snapshot.changes, None, true)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.files_loading = false;
+                this.working.files_loading = false;
                 match result {
-                    Ok((changes, stats)) => {
-                        this.set_changes(changes, stats, cx);
-                        if !this.changes.is_empty() && this.view != View::Repositories {
-                            this.select_file(0, cx);
+                    Ok(prepared) => this.apply_changes(Source::Working, prepared, cx),
+                    Err(error) => this.working.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn ensure_history_preview(&mut self, cx: &mut Context<Self>) {
+        if self.history.files.loaded
+            && self.history.files.selected_file.is_none()
+            && !self.history.files.changes.is_empty()
+        {
+            self.select_source_file(Source::History, 0, cx);
+        }
+    }
+
+    fn load_more(&mut self, cx: &mut Context<Self>) {
+        if !self.loading && !self.history.loading && self.history.has_more {
+            self.load_history_page(HistoryRequest::More, cx);
+        }
+    }
+
+    fn submit_history_search(&mut self, cx: &mut Context<Self>) {
+        if self.loading || (self.history.loading && self.history.revision.is_none()) {
+            return;
+        }
+        self.history.query = self.history_search.read(cx).value().trim().to_owned();
+        self.load_history_page(HistoryRequest::Search, cx);
+    }
+
+    /// A new branch resolves a new tip; searches and pagination stay on the loaded tip.
+    fn load_history_page(&mut self, request: HistoryRequest, cx: &mut Context<Self>) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let reset = !matches!(request, HistoryRequest::More);
+        let branch = match request {
+            HistoryRequest::Branch(reference) => Some(reference),
+            HistoryRequest::Search | HistoryRequest::More => None,
+        };
+        self.history.load_task = None;
+        if reset {
+            self.history.files.cancel_pending();
+        }
+        self.history.loading = true;
+        self.history.files.error = None;
+        let offset = if reset { 0 } else { self.history.commits.len() };
+        let revision = branch
+            .clone()
+            .unwrap_or_else(|| self.history.revision.clone());
+        let query = self.history.query.clone();
+        let preview = self.view == View::History;
+        self.history.load_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let page = repo.history_filtered(offset, revision.as_deref(), &query)?;
+                    let prepared = if reset {
+                        let commit = page.commits.first();
+                        let changes = commit
+                            .map(|commit| repo.commit_changes(commit))
+                            .transpose()?
+                            .unwrap_or_default();
+                        Some(PreparedChanges::load(&repo, changes, commit, preview)?)
+                    } else {
+                        None
+                    };
+                    anyhow::Ok((page, prepared))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.history.loading = false;
+                match result {
+                    Ok((page, prepared)) => {
+                        if reset {
+                            this.reset_copy_feedback();
+                            this.history.commits.clear();
+                            this.history.scroll = UniformListScrollHandle::new();
+                            this.repository_preview = false;
+                        }
+                        this.history.revision = page.revision;
+                        this.history.commits.extend(page.commits);
+                        this.history.has_more = page.has_more;
+                        if this.history.query.is_empty() {
+                            this.history.search_available =
+                                this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
+                        }
+                        if let Some(prepared) = prepared {
+                            this.history.selected_commit =
+                                (!this.history.commits.is_empty()).then_some(0);
+                            this.apply_changes(Source::History, prepared, cx);
+                            if this.view == View::History {
+                                this.ensure_history_preview(cx);
+                            }
+                        }
+                        if let Some(reference) = branch {
+                            let repo = this.repository.as_ref().unwrap();
+                            // Lazy first entry and Tab changes do not rewrite preferences.
+                            if this.preferences.viewed_branch(&repo.root) != reference.as_deref() {
+                                this.preferences.set_viewed_branch(&repo.root, reference);
+                                this.save_preferences();
+                            }
                         }
                     }
-                    Err(error) => this.error = Some(format!("{error:#}")),
+                    Err(error) => this.history.files.error = Some(format!("{error:#}")),
                 }
                 cx.notify();
             });
@@ -371,30 +634,131 @@ impl Patchlook {
         cx.notify();
     }
 
-    fn set_changes(
+    fn reset_copy_feedback(&mut self) {
+        self.copy_feedback_task = None;
+        self.commit_copied = false;
+    }
+
+    fn select_commit(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.loading || self.history.loading {
+            return;
+        }
+        if self.history.selected_commit == Some(index)
+            && self.history.files.loaded
+            && !self.history.files.files_loading
+            && self.history.files.error.is_none()
+        {
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let commit = self.history.commits[index].clone();
+        self.history.files.cancel_pending();
+        self.history.files.files_loading = true;
+        self.history.files.error = None;
+        let preview = self.view == View::History;
+        self.history.files.load_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let changes = repo.commit_changes(&commit)?;
+                    PreparedChanges::load(&repo, changes, Some(&commit), preview)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.history.files.files_loading = false;
+                match result {
+                    Ok(prepared) => {
+                        this.reset_copy_feedback();
+                        this.repository_preview = false;
+                        this.history.selected_commit = Some(index);
+                        this.apply_changes(Source::History, prepared, cx);
+                        if this.view == View::History {
+                            this.ensure_history_preview(cx);
+                        }
+                    }
+                    Err(error) => this.history.files.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn apply_changes(&mut self, source: Source, prepared: PreparedChanges, cx: &mut Context<Self>) {
+        let mut files = ChangeState::new(self.preferences.layout, cx);
+        files.loaded = true;
+        files.total_stats = Some(prepared.stats.iter().flatten().copied().sum());
+        files.change_tree = self.repository.as_ref().map(|repo| {
+            ChangeTree::new(
+                &prepared.changes,
+                &prepared.stats,
+                &repo.root,
+                cx,
+                move |this, index, cx| {
+                    // Retained hidden trees must never drive the currently displayed data set.
+                    if this.view.source() == source
+                        && this.files_for(source).selected_file != Some(index)
+                    {
+                        this.select_file(index, cx);
+                    }
+                },
+            )
+        });
+        files.changes = prepared.changes;
+        files.file_stats = prepared.stats;
+        *self.files_for_mut(source) = files;
+        if let Some(preview) = prepared.preview {
+            let files = self.files_for_mut(source);
+            files.selected_file = Some(0);
+            if let Some(tree) = &files.change_tree {
+                tree.reveal_file(0, cx);
+            }
+            self.apply_file_result(source, preview, cx);
+        }
+    }
+
+    fn apply_file_result(
         &mut self,
-        changes: Vec<Change>,
-        stats: Vec<Option<DiffStats>>,
+        source: Source,
+        result: anyhow::Result<FileContent>,
         cx: &mut Context<Self>,
     ) {
-        self.total_stats = Some(stats.iter().flatten().copied().sum());
-        self.change_tree = self
-            .repository
-            .as_ref()
-            .map(|repo| ChangeTree::new(&changes, &stats, &repo.root, cx));
-        self.changes = changes;
-        self.file_stats = stats;
+        let files = self.files_for_mut(source);
+        match result {
+            Ok(content) => {
+                let (diffs, image) = match content {
+                    FileContent::Text(diffs) => (diffs, None),
+                    FileContent::Image(image) => (Vec::new(), Some(image)),
+                };
+                files.empty_patch = diffs.is_empty() && image.is_none();
+                files.image = image.map(|image| cx.new(|_| ImageDiff::new(image)));
+                files.image_subscription = files
+                    .image
+                    .as_ref()
+                    .map(|image| cx.observe(image, |_, _, cx| cx.notify()));
+                files.diff.update(cx, |diff, cx| diff.set_files(diffs, cx));
+            }
+            Err(error) => {
+                files.image = None;
+                files.image_subscription = None;
+                files.diff.update(cx, |diff, cx| diff.set_files([], cx));
+                files.error = Some(format!("{}: {error:#}", tr("load_failed")));
+            }
+        }
     }
 
     fn toggle_file_list(&mut self, cx: &mut Context<Self>) {
-        self.tree_file_list = !self.tree_file_list;
-        if let Some(index) = self.selected_file {
-            if self.tree_file_list {
-                if let Some(tree) = &self.change_tree {
+        self.preferences.tree_file_list = !self.preferences.tree_file_list;
+        self.save_preferences();
+        if let Some(index) = self.active_files().selected_file {
+            if self.preferences.tree_file_list {
+                if let Some(tree) = &self.active_files().change_tree {
                     tree.reveal_file(index, cx);
                 }
             } else {
-                self.file_scroll
+                self.active_files()
+                    .file_scroll
                     .scroll_to_item(index, ScrollStrategy::Center);
             }
         }
@@ -402,77 +766,126 @@ impl Patchlook {
     }
 
     fn select_file(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
-        let change = self.changes[index].clone();
-        let commit = self
-            .selected_commit
-            .map(|index| self.commits[index].clone());
-        self.selected_file = Some(index);
-        if let Some(tree) = &self.change_tree {
-            tree.reveal_file(index, cx);
+        if self.view == View::Repositories {
+            self.repository_preview = true;
         }
-        self.file_scroll
-            .scroll_to_item(index, ScrollStrategy::Center);
-        self.patch_task = None;
-        self.patch_loading = true;
-        self.error = None;
-        self.empty_patch = false;
-        self.patch_task = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    if image_format(&change.path).is_some() {
-                        let versions = repo.file_versions(&change, commit.as_ref())?;
-                        Ok::<_, anyhow::Error>((
-                            vec![],
-                            Some(ImageVersions::decode(&change, versions)?),
-                        ))
-                    } else {
-                        let patch = repo.patch(&change, commit.as_ref())?;
-                        Ok((DiffFile::parse(&patch)?, None))
-                    }
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.patch_loading = false;
-                match result {
-                    Ok((files, image)) => {
-                        this.empty_patch = files.is_empty() && image.is_none();
-                        this.image = image.map(|image| cx.new(|_| ImageDiff::new(image)));
-                        this.image_subscription = this
-                            .image
-                            .as_ref()
-                            .map(|image| cx.observe(image, |_, _, cx| cx.notify()));
-                        this.diff.update(cx, |diff, cx| diff.set_files(files, cx));
-                    }
-                    Err(error) => {
-                        this.image = None;
-                        this.image_subscription = None;
-                        this.diff.update(cx, |diff, cx| diff.set_files([], cx));
-                        this.error = Some(format!("{}: {error:#}", tr("load_failed")));
-                    }
-                }
-                cx.notify();
-            });
-        }));
+        self.select_source_file(self.view.source(), index, cx);
         cx.notify();
     }
 
+    fn select_source_file(&mut self, source: Source, index: usize, cx: &mut Context<Self>) {
+        if self.loading || self.files_for(source).files_loading {
+            return;
+        }
+        if self.files_for(source).selected_file == Some(index)
+            && self.files_for(source).error.is_none()
+        {
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let commit = if source == Source::History {
+            self.history
+                .selected_commit
+                .map(|i| self.history.commits[i].clone())
+        } else {
+            None
+        };
+        let files = self.files_for_mut(source);
+        let change = files.changes[index].clone();
+        files.selected_file = Some(index);
+        if let Some(tree) = &files.change_tree {
+            tree.reveal_file(index, cx);
+        }
+        files
+            .file_scroll
+            .scroll_to_item(index, ScrollStrategy::Center);
+        files.patch_task = None;
+        files.patch_loading = true;
+        files.error = None;
+        files.empty_patch = false;
+        files.patch_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FILE_SELECTION_DELAY).await;
+            let result = cx
+                .background_spawn(async move { FileContent::load(&repo, &change, commit.as_ref()) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.files_for_mut(source).patch_loading = false;
+                this.apply_file_result(source, result, cx);
+                cx.notify();
+            });
+        }));
+    }
+
     fn previous_file(&self) -> Option<usize> {
-        self.selected_file.and_then(|index| index.checked_sub(1))
+        self.active_files()
+            .selected_file
+            .and_then(|index| index.checked_sub(1))
     }
 
     fn next_file(&self) -> Option<usize> {
-        self.selected_file
+        self.active_files()
+            .selected_file
             .map(|index| index + 1)
-            .filter(|index| *index < self.changes.len())
+            .filter(|index| *index < self.active_files().changes.len())
+    }
+
+    fn commit_message_button(&self, cx: &mut Context<Self>) -> Button {
+        icon_button(
+            "toggle-commit-message",
+            IconName::PanelBottom,
+            if self.preferences.show_commit_message {
+                "hide_commit_message"
+            } else {
+                "show_commit_message"
+            },
+        )
+        .text_color(cx.theme().muted_foreground)
+        .selected(self.preferences.show_commit_message)
+        .toggled(self.preferences.show_commit_message)
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.preferences.show_commit_message = !this.preferences.show_commit_message;
+            this.save_preferences();
+            cx.notify();
+        }))
+    }
+
+    fn commit_id_button(&self, commit: &Commit, cx: &mut Context<Self>) -> Button {
+        let id = commit.id.clone();
+        Button::new("copy-commit-id")
+            .label(if self.commit_copied {
+                tr("commit_copied").to_owned()
+            } else {
+                commit.short_id.clone()
+            })
+            .xsmall()
+            .ghost()
+            .min_w(px(72.))
+            .text_color(cx.theme().muted_foreground)
+            .tooltip(format!("{}\n{}", tr("copy_commit_id"), commit.id))
+            .accessibility_label(tr("copy_commit_id"))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
+                this.commit_copied = true;
+                this.copy_feedback_task = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(COPY_FEEDBACK_DURATION).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.commit_copied = false;
+                        cx.notify();
+                    });
+                }));
+                cx.notify();
+            }))
     }
 
     fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
         self.preferences.layout = layout;
-        self.diff
-            .update(cx, |diff, cx| diff.set_mode(diff_mode(layout), cx));
+        for source in [Source::Working, Source::History] {
+            self.files_for(source)
+                .diff
+                .update(cx, |diff, cx| diff.set_mode(diff_mode(layout), cx));
+        }
         self.save_preferences();
         cx.notify();
     }
@@ -489,9 +902,12 @@ impl Patchlook {
         cx.notify();
     }
 
-    fn set_language(&mut self, language: Language, cx: &mut Context<Self>) {
+    fn set_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
         self.preferences.language = language;
         apply_language(language, cx);
+        self.history_search.update(cx, |input, cx| {
+            input.set_placeholder(tr("search_commits_placeholder"), window, cx);
+        });
         self.save_preferences();
         cx.notify();
     }
@@ -537,6 +953,47 @@ fn status_label(status: char) -> &'static str {
         'U' => "conflict",
         _ => "modified",
     })
+}
+
+/// Map the same lowercase literal matches used by Git search back to UTF-8 source ranges.
+fn search_match_ranges(text: &str, query: &str) -> Vec<Range<usize>> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let folded = text.to_lowercase();
+    let matches = folded.match_indices(&query);
+    if text.is_ascii() {
+        return matches
+            .map(|(start, value)| start..start + value.len())
+            .collect();
+    }
+
+    // Lowercasing can change byte length or expand a character (for example İ).
+    let mut folded_offset = 0;
+    let spans = text
+        .char_indices()
+        .map(|(start, ch)| {
+            let folded_start = folded_offset;
+            folded_offset += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+            (folded_start..folded_offset, start..start + ch.len_utf8())
+        })
+        .collect::<Vec<_>>();
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for (start, value) in matches {
+        let first = spans.partition_point(|(folded, _)| folded.end <= start);
+        let last = spans.partition_point(|(folded, _)| folded.start < start + value.len()) - 1;
+        let range = spans[first].1.start..spans[last].1.end;
+        if let Some(previous) = ranges
+            .last_mut()
+            .filter(|previous| previous.end > range.start)
+        {
+            previous.end = range.end;
+        } else {
+            ranges.push(range);
+        }
+    }
+    ranges
 }
 
 fn appearance_label(appearance: Appearance) -> (IconName, &'static str) {
@@ -606,9 +1063,10 @@ impl Patchlook {
                         menu.item(
                             PopupMenuItem::new(language_name(language))
                                 .checked(selected == language)
-                                .on_click(move |_, _, cx| {
-                                    let _ =
-                                        app.update(cx, |this, cx| this.set_language(language, cx));
+                                .on_click(move |_, window, cx| {
+                                    let _ = app.update(cx, |this, cx| {
+                                        this.set_language(language, window, cx)
+                                    });
                                 }),
                         )
                     },
@@ -983,9 +1441,10 @@ impl Patchlook {
     }
 
     fn diff_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let file = self.diff.read(cx).files().first();
+        let file = self.active_files().diff.read(cx).files().first();
         let path = file.map(|file| file.path().clone());
         let title = self
+            .active_files()
             .image
             .as_ref()
             .map(|image| image.read(cx).title().to_owned())
@@ -996,14 +1455,15 @@ impl Patchlook {
                 })
             })
             .or_else(|| {
-                self.selected_file
-                    .and_then(|i| self.changes.get(i))
+                self.active_files()
+                    .selected_file
+                    .and_then(|i| self.active_files().changes.get(i))
                     .map(|change| change.path.display().to_string())
             });
-        let folded_context = self.diff.read(cx).has_collapsed_context();
+        let folded_context = self.active_files().diff.read(cx).has_collapsed_context();
         let collapsed = path
             .as_ref()
-            .is_some_and(|path| self.diff.read(cx).is_file_collapsed(path));
+            .is_some_and(|path| self.active_files().diff.read(cx).is_file_collapsed(path));
         h_flex()
             .flex_none()
             .h(px(32.))
@@ -1015,8 +1475,7 @@ impl Patchlook {
                 row.child(
                     icon_button("back-to-files", IconName::ArrowLeft, "back_to_files").on_click(
                         cx.listener(|this, _, _, cx| {
-                            this.clear_file(cx);
-                            this.error = None;
+                            this.repository_preview = false;
                             cx.notify();
                         }),
                     ),
@@ -1038,7 +1497,7 @@ impl Patchlook {
                         },
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.diff.update(cx, |diff, cx| {
+                        this.active_files().diff.update(cx, |diff, cx| {
                             diff.set_file_collapsed(&path, !diff.is_file_collapsed(&path), cx)
                         });
                     })),
@@ -1102,7 +1561,7 @@ impl Patchlook {
                     })),
             )
             .child(toolbar_divider(cx))
-            .when(self.image.is_none(), |row| {
+            .when(self.active_files().image.is_none(), |row| {
                 row.child(
                     icon_button(
                         "toggle-context",
@@ -1122,7 +1581,7 @@ impl Patchlook {
                     })
                     .disabled(file.is_none() || collapsed)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.diff.update(cx, |diff, cx| {
+                        this.active_files().diff.update(cx, |diff, cx| {
                             if diff.has_collapsed_context() {
                                 diff.expand_unchanged(cx);
                             } else {
@@ -1134,10 +1593,11 @@ impl Patchlook {
                 .child(
                     icon_button("soft-wrap", IconName::TextWrap, "soft_wrap")
                         .text_color(cx.theme().muted_foreground)
-                        .selected(self.soft_wrap)
-                        .toggled(self.soft_wrap)
+                        .selected(self.preferences.soft_wrap)
+                        .toggled(self.preferences.soft_wrap)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.soft_wrap = !this.soft_wrap;
+                            this.preferences.soft_wrap = !this.preferences.soft_wrap;
+                            this.save_preferences();
                             cx.notify();
                         })),
                 )
@@ -1157,14 +1617,22 @@ impl Patchlook {
                     }),
                 )
             })
-            .when_some(self.image.as_ref(), |row, image| {
+            .when_some(self.active_files().image.as_ref(), |row, image| {
                 row.child(ImageDiff::toolbar(image, cx))
+            })
+            .when(self.current_commit().is_some(), |row| {
+                row.child(toolbar_divider(cx))
+                    .child(self.commit_message_button(cx))
             })
     }
 
     fn files(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tree_view = self.view == View::Repositories || self.tree_file_list;
-        let tree = self.change_tree.as_ref().filter(|_| tree_view);
+        let tree_view = self.view == View::Repositories || self.preferences.tree_file_list;
+        let tree = self
+            .active_files()
+            .change_tree
+            .as_ref()
+            .filter(|_| tree_view);
         v_flex()
             .size_full()
             .min_h_0()
@@ -1184,17 +1652,17 @@ impl Patchlook {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(tr("files"))
-                    .child(self.changes.len().to_string())
+                    .child(self.active_files().changes.len().to_string())
                     .when(self.view != View::Repositories, |row| {
                         row.child(
                             icon_button(
                                 "toggle-file-list",
-                                if self.tree_file_list {
+                                if self.preferences.tree_file_list {
                                     IconName::List
                                 } else {
                                     IconName::FolderTree
                                 },
-                                if self.tree_file_list {
+                                if self.preferences.tree_file_list {
                                     "flat_file_list"
                                 } else {
                                     "tree_file_list"
@@ -1202,7 +1670,7 @@ impl Patchlook {
                             )
                             .ml_1()
                             .icon(
-                                Icon::new(if self.tree_file_list {
+                                Icon::new(if self.preferences.tree_file_list {
                                     IconName::List
                                 } else {
                                     IconName::FolderTree
@@ -1232,10 +1700,10 @@ impl Patchlook {
                                         "collapse_directories"
                                     },
                                 )
-                                .disabled(self.changes.is_empty())
+                                .disabled(self.active_files().changes.is_empty())
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
-                                        if let Some(tree) = &this.change_tree {
+                                        if let Some(tree) = &this.active_files().change_tree {
                                             tree.toggle_directories(cx);
                                         }
                                     },
@@ -1245,7 +1713,7 @@ impl Patchlook {
                             .child(toolbar_divider(cx))
                         },
                     )
-                    .when_some(self.total_stats, |row, stats| {
+                    .when_some(self.active_files().total_stats, |row, stats| {
                         row.child(
                             h_flex()
                                 .gap_2()
@@ -1269,21 +1737,29 @@ impl Patchlook {
                                         .child(format!("−{}", stats.deletions)),
                                 ),
                         )
-                    }),
+                    })
+                    .when(
+                        self.view == View::Repositories && self.current_commit().is_some(),
+                        |row| {
+                            row.child(toolbar_divider(cx))
+                                .child(self.commit_message_button(cx))
+                        },
+                    ),
             )
             .child(if let Some(tree) = tree {
-                let app = cx.entity().downgrade();
                 div()
                     .flex_1()
                     .min_h_0()
                     .child(tree.render(
-                        self.viewed_branch_name(),
-                        self.show_file_stats,
-                        self.view == View::Working,
-                        cx,
-                        move |index, _, cx| {
-                            let _ = app.update(cx, |app, cx| app.select_file(index, cx));
+                        if self.view == View::Working {
+                            self.branch.clone()
+                        } else {
+                            self.viewed_branch_name()
                         },
+                        self.preferences.show_file_stats,
+                        self.view == View::Working,
+                        cx.listener(|this, index: &usize, _, cx| this.select_file(*index, cx)),
+                        cx,
                     ))
                     .into_any_element()
             } else {
@@ -1294,17 +1770,20 @@ impl Patchlook {
                     .child(
                         uniform_list(
                             "files-list",
-                            self.changes.len(),
+                            self.active_files().changes.len(),
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                                 range
                                     .map(|index| this.file_row(index, cx))
                                     .collect::<Vec<_>>()
                             }),
                         )
-                        .track_scroll(&self.file_scroll)
+                        .track_scroll(&self.active_files().file_scroll)
                         .size_full(),
                     )
-                    .child(list_scrollbar("files-list-scrollbar", &self.file_scroll))
+                    .child(list_scrollbar(
+                        "files-list-scrollbar",
+                        &self.active_files().file_scroll,
+                    ))
                     .into_any_element()
             })
             .into_any_element()
@@ -1314,7 +1793,7 @@ impl Patchlook {
         icon_button(
             "toggle-file-stats",
             IconName::Diff,
-            if self.show_file_stats {
+            if self.preferences.show_file_stats {
                 "hide_file_stats"
             } else {
                 "show_file_stats"
@@ -1323,16 +1802,17 @@ impl Patchlook {
         .when(self.view != View::Repositories, |button| {
             button.icon(Icon::new(IconName::Diff).text_color(cx.theme().muted_foreground))
         })
-        .selected(self.show_file_stats)
-        .toggled(self.show_file_stats)
+        .selected(self.preferences.show_file_stats)
+        .toggled(self.preferences.show_file_stats)
         .on_click(cx.listener(|this, _, _, cx| {
-            this.show_file_stats = !this.show_file_stats;
+            this.preferences.show_file_stats = !this.preferences.show_file_stats;
+            this.save_preferences();
             cx.notify();
         }))
     }
 
     fn file_row(&self, index: usize, cx: &mut Context<Self>) -> Div {
-        let change = &self.changes[index];
+        let change = &self.active_files().changes[index];
         let filename = change
             .path
             .file_name()
@@ -1344,11 +1824,7 @@ impl Patchlook {
         } else {
             status_label(change.status)
         };
-        let status_color = match change.status {
-            'A' => cx.theme().success,
-            'D' => cx.theme().danger,
-            _ => cx.theme().warning,
-        };
+        let status_color = file_status_color(change.status, cx);
         div().h(px(50.)).px_2().pb_1().child(
             Button::new(("file", index))
                 .custom(
@@ -1361,7 +1837,7 @@ impl Patchlook {
                 .justify_start()
                 .px_2()
                 .border_0()
-                .selected(self.selected_file == Some(index))
+                .selected(self.active_files().selected_file == Some(index))
                 .tooltip(change.path.display().to_string())
                 .accessibility_label(format!("{}, {}", change.path.display(), caption))
                 .child(
@@ -1369,13 +1845,7 @@ impl Patchlook {
                         .gap_2()
                         .w_full()
                         .min_w_0()
-                        .child(
-                            div()
-                                .w(px(16.))
-                                .flex_none()
-                                .text_color(status_color)
-                                .child(change.status.to_string()),
-                        )
+                        .child(file_icon(&change.path).size(px(20.)))
                         .child(
                             v_flex()
                                 .min_w_0()
@@ -1390,14 +1860,16 @@ impl Patchlook {
                                                 .flex_1()
                                                 .min_w_0()
                                                 .text_sm()
+                                                .text_color(status_color)
                                                 .truncate()
                                                 .child(filename),
                                         )
                                         .when_some(
-                                            self.file_stats
+                                            self.active_files()
+                                                .file_stats
                                                 .get(index)
                                                 .copied()
-                                                .filter(|_| self.show_file_stats),
+                                                .filter(|_| self.preferences.show_file_stats),
                                             |row, stats| row.child(stats_label(stats, cx)),
                                         ),
                                 )
@@ -1412,8 +1884,9 @@ impl Patchlook {
                                                 change
                                                     .path
                                                     .parent()
+                                                    .filter(|path| !path.as_os_str().is_empty())
                                                     .map(|path| path.display().to_string())
-                                                    .unwrap_or_default(),
+                                                    .unwrap_or_else(|| ".".into()),
                                             ),
                                         )
                                         .child(div().flex_none().child(caption)),
@@ -1442,7 +1915,7 @@ impl Patchlook {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(tr("commits"))
-                    .child(self.commits.len().to_string())
+                    .child(self.history.commits.len().to_string())
                     .child(div().flex_1())
                     .child(Icon::new(IconName::GitBranch).xsmall())
                     .child(div().min_w_0().truncate().child(self.viewed_branch_name())),
@@ -1455,39 +1928,82 @@ impl Patchlook {
                     .child(
                         uniform_list(
                             "commits-list",
-                            self.commits.len(),
+                            self.history.commits.len() + usize::from(self.history.has_more),
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                                 range
-                                    .map(|index| this.commit_row(index, cx))
+                                    .map(|index| {
+                                        if index == this.history.commits.len() {
+                                            this.load_more_row(cx)
+                                        } else {
+                                            this.commit_row(index, cx)
+                                        }
+                                    })
                                     .collect::<Vec<_>>()
                             }),
                         )
-                        .track_scroll(&self.commit_scroll)
+                        .track_scroll(&self.history.scroll)
                         .size_full(),
                     )
                     .child(list_scrollbar(
                         "commits-list-scrollbar",
-                        &self.commit_scroll,
+                        &self.history.scroll,
                     )),
             )
-            .when(self.has_more, |view| {
-                view.child(
-                    div().flex_none().p_2().child(
-                        Button::new("more-commits")
-                            .label(tr("load_more"))
-                            .small()
-                            .ghost()
-                            .w_full()
-                            .loading(self.loading)
-                            .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
-                    ),
-                )
-            })
+            .when(
+                self.history.search_available || !self.history.query.is_empty(),
+                |view| {
+                    view.child(
+                        h_flex()
+                            .flex_none()
+                            .p_2()
+                            .gap_1()
+                            .on_action(cx.listener(
+                                |this, _: &component::input::Escape, window, cx| {
+                                    window.focus(&this.focus, cx);
+                                },
+                            ))
+                            .child(
+                                Input::new(&self.history_search)
+                                    .id("history-search-input")
+                                    .aria_label(tr("search_commits_placeholder"))
+                                    .small()
+                                    .cleanable(true)
+                                    .flex_1(),
+                            )
+                            .child(
+                                icon_button("search-commits", IconName::Search, "search_commits")
+                                    .small()
+                                    .disabled(
+                                        self.loading
+                                            || (self.history.loading
+                                                && self.history.revision.is_none()),
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.submit_history_search(cx)
+                                        }),
+                                    ),
+                            ),
+                    )
+                },
+            )
             .into_any_element()
     }
 
+    fn load_more_row(&self, cx: &mut Context<Self>) -> Div {
+        div().h(px(50.)).px_2().pb_1().child(
+            Button::new("more-commits")
+                .label(tr("load_more"))
+                .small()
+                .ghost()
+                .size_full()
+                .loading(self.history.loading)
+                .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
+        )
+    }
+
     fn commit_row(&self, index: usize, cx: &mut Context<Self>) -> Div {
-        let commit = &self.commits[index];
+        let commit = &self.history.commits[index];
         div().h(px(50.)).px_2().pb_1().child(
             Button::new(("commit", index))
                 .custom(
@@ -1498,7 +2014,7 @@ impl Patchlook {
                 .w_full()
                 .h_full()
                 .justify_start()
-                .selected(self.selected_commit == Some(index))
+                .selected(self.history.selected_commit == Some(index))
                 .tooltip(commit.subject.clone())
                 .accessibility_label(format!(
                     "{}, {}, {}",
@@ -1510,7 +2026,11 @@ impl Patchlook {
                         .min_w_0()
                         .items_start()
                         .gap_1()
-                        .child(div().text_sm().truncate().child(commit.subject.clone()))
+                        .child(div().text_sm().truncate().child(
+                            StyledText::new(commit.subject.clone()).with_highlights(
+                                self.commit_highlights(commit, &commit.subject, cx),
+                            ),
+                        ))
                         .child(
                             h_flex()
                                 .w_full()
@@ -1525,40 +2045,72 @@ impl Patchlook {
         )
     }
 
+    fn commit_highlights(
+        &self,
+        commit: &Commit,
+        text: &str,
+        cx: &App,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        let query = self.history.query.to_lowercase();
+        if query.is_empty() || commit.id.starts_with(&query) {
+            return Vec::new();
+        }
+        search_match_ranges(text, &query)
+            .into_iter()
+            .map(|range| {
+                (
+                    range,
+                    HighlightStyle {
+                        background_color: Some(cx.theme().yellow.opacity(0.3)),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn detail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let content = if (self.loading && self.commits.is_empty()) || self.files_loading {
+        let content = if (self.loading
+            || self.active_files().files_loading
+            || (self.view != View::Working && self.history.loading))
+            && !self.active_files().loaded
+        {
             self.message("loading", None, cx)
-        } else if self.patch_loading
-            && self.diff.read(cx).files().is_empty()
-            && self.image.is_none()
-        {
-            self.message("loading_diff", None, cx)
-        } else if self.empty_patch {
-            self.message("no_patch", Some("no_patch_body"), cx)
-        } else if self.error.is_some()
-            && self.diff.read(cx).files().is_empty()
-            && self.image.is_none()
-        {
-            self.message("load_failed", None, cx)
-        } else if let Some(image) = &self.image {
-            image.clone().into_any_element()
         } else if self.view == View::Repositories
-            && self.selected_file.is_none()
-            && self.selected_commit.is_some()
+            && !self.repository_preview
+            && self.history.selected_commit.is_some()
         {
             self.files(cx)
-        } else if self.selected_file.is_some() {
-            Diff::new(&self.diff)
+        } else if self.active_files().patch_loading
+            && self.active_files().diff.read(cx).files().is_empty()
+            && self.active_files().image.is_none()
+        {
+            self.message("loading_diff", None, cx)
+        } else if self.active_files().empty_patch {
+            self.message("no_patch", Some("no_patch_body"), cx)
+        } else if self.visible_error().is_some()
+            && self.active_files().diff.read(cx).files().is_empty()
+            && self.active_files().image.is_none()
+        {
+            self.message("load_failed", None, cx)
+        } else if let Some(image) = &self.active_files().image {
+            image.clone().into_any_element()
+        } else if self.active_files().selected_file.is_some() {
+            Diff::new(&self.active_files().diff)
                 .change_indicator(DiffChangeIndicator::Bars)
                 .header_visible(false)
-                .soft_wrap(self.soft_wrap)
+                .soft_wrap(self.preferences.soft_wrap)
                 .hunk_separator(DiffHunkSeparator::Wave)
                 .size_full()
                 .into_any_element()
-        } else if self.view == View::Working && self.changes.is_empty() {
+        } else if self.view == View::Working && self.active_files().changes.is_empty() {
             self.message("clean_title", Some("clean_body"), cx)
-        } else if self.view != View::Working && self.commits.is_empty() {
-            self.message("no_commits_title", Some("no_commits_body"), cx)
+        } else if self.view != View::Working && self.history.commits.is_empty() {
+            if self.history.query.is_empty() {
+                self.message("no_commits_title", Some("no_commits_body"), cx)
+            } else {
+                self.message("no_matching_commits", Some("no_matching_commits_body"), cx)
+            }
         } else {
             self.message("no_files", None, cx)
         };
@@ -1567,7 +2119,7 @@ impl Patchlook {
             .min_w_0()
             .min_h_0()
             .when(
-                self.view != View::Repositories || self.selected_file.is_some(),
+                self.view != View::Repositories || self.repository_preview,
                 |view| view.child(self.diff_header(window, cx)),
             )
             .child(
@@ -1579,11 +2131,13 @@ impl Patchlook {
                     .child(content),
             )
             .when_some(
-                self.selected_commit.and_then(|i| self.commits.get(i)),
+                self.current_commit()
+                    .filter(|_| self.preferences.show_commit_message),
                 |view, commit| {
                     view.child(
                         v_flex()
                             .id("commit-message")
+                            .test_support()
                             .flex_none()
                             .max_h(px(200.))
                             .overflow_y_scroll()
@@ -1592,21 +2146,39 @@ impl Patchlook {
                             .gap_1()
                             .border_t(px(1. / window.scale_factor()))
                             .border_color(cx.theme().border)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
+                            )
                             .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(commit.subject.clone()),
+                                div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                                    SelectableText::new(
+                                        SharedString::from(format!("commit-subject-{}", commit.id)),
+                                        commit.subject.clone(),
+                                    )
+                                    .document_order(0),
+                                ),
                             )
                             .when(!commit.body.is_empty(), |view| {
-                                view.child(div().text_sm().child(commit.body.clone()))
+                                view.child(
+                                    div().text_sm().child(
+                                        SelectableText::new(
+                                            SharedString::from(format!(
+                                                "commit-body-{}",
+                                                commit.id
+                                            )),
+                                            commit.body.clone(),
+                                        )
+                                        .document_order(1),
+                                    ),
+                                )
                             })
                             .child(
                                 h_flex()
                                     .gap_3()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(commit.short_id.clone())
+                                    .child(self.commit_id_button(commit, cx))
                                     .child(commit.author.clone())
                                     .child(commit.date.clone())
                                     .when(commit.parents.len() > 1, |row| {
@@ -1692,15 +2264,28 @@ impl Render for Patchlook {
             }
         } else {
             let sidebar = if self.view == View::Repositories {
+                let ratio = self.preferences.repository_sidebar_ratio.unwrap_or(0.5);
                 v_resizable("repositories-sidebar")
+                    .on_resize(cx.listener(
+                        |this, state: &Entity<component::resizable::ResizableState>, _, cx| {
+                            let sizes = state.read(cx).sizes();
+                            if sizes.len() == 2 && sizes[0] + sizes[1] > px(0.) {
+                                this.preferences.repository_sidebar_ratio =
+                                    Some(sizes[0] / (sizes[0] + sizes[1]));
+                                this.save_preferences();
+                            }
+                        },
+                    ))
                     .child(
                         resizable_panel()
-                            .size(px(230.))
+                            .size(px(0.))
+                            .flex_grow(ratio)
                             .child(self.repositories(cx)),
                     )
                     .child(
                         resizable_panel()
-                            .overflow_hidden()
+                            .size(px(0.))
+                            .flex_grow(1. - ratio)
                             .child(self.branch_list(cx)),
                     )
                     .into_any_element()
@@ -1759,7 +2344,7 @@ impl Render for Patchlook {
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::refresh))
             .child(self.toolbar(cx))
-            .when_some(self.error.clone(), |view, error| {
+            .when_some(self.visible_error().cloned(), |view, error| {
                 view.child(
                     h_flex()
                         .flex_none()
@@ -1777,6 +2362,7 @@ impl Render for Patchlook {
                                 .accessibility_label(tr("dismiss"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.error = None;
+                                    this.active_files_mut().error = None;
                                     cx.notify();
                                 })),
                         ),
@@ -1801,6 +2387,286 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use patchlook::git::Area;
 
+    #[test]
+    fn failed_initial_preview_does_not_discard_the_file_list() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(directory.path())
+                .args(["init", "-b", "main"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        std::fs::write(directory.path().join("broken.png"), "not an image").unwrap();
+        let repository = Repository::open(directory.path()).unwrap();
+        let prepared = PreparedChanges::load(
+            &repository,
+            vec![Change {
+                path: "broken.png".into(),
+                previous_path: None,
+                status: 'A',
+                area: Area::Untracked,
+            }],
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(prepared.changes.len(), 1);
+        assert!(prepared.preview.unwrap().is_err());
+    }
+
+    fn repository_sidebar_ratio(window: &mut Window) -> f32 {
+        let top = window.find("repositories").bounds().bottom();
+        let divider = window
+            .within("repositories-sidebar")
+            .find(("resizable-handle", 0usize))
+            .bounds()
+            .center()
+            .y;
+        (divider - top) / (window.viewport_size().height - top)
+    }
+
+    #[test]
+    fn search_highlights_preserve_case_insensitive_utf8_ranges() {
+        for (text, query, expected) in [
+            ("Fix FIX fixes", "fix", vec!["Fix", "FIX", "fix"]),
+            ("更新中文，中文说明", "中文", vec!["中文", "中文"]),
+            ("ÉCOLE école", "école", vec!["ÉCOLE", "école"]),
+            ("İstanbul", "i", vec!["İ"]),
+            ("ΟΣ ος", "ος", vec!["ΟΣ", "ος"]),
+            ("literal [.] match", "[.]", vec!["[.]"]),
+            ("no matches", " ", vec![]),
+        ] {
+            let ranges = search_match_ranges(text, query);
+            assert_eq!(
+                ranges
+                    .iter()
+                    .map(|range| &text[range.clone()])
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(
+                ranges.is_empty(),
+                query.trim().is_empty()
+                    || !text.to_lowercase().contains(&query.trim().to_lowercase())
+            );
+        }
+    }
+
+    fn test_app(window: &mut Window, cx: &mut Context<Patchlook>) -> Patchlook {
+        Patchlook {
+            working: ChangeState::new(Layout::Split, cx),
+            history: HistoryState::new(Layout::Split, cx),
+            preferences: Preferences::default(),
+            preferences_directory: tempfile::tempdir().unwrap(),
+            repository: None,
+            branch: "main".into(),
+            branches: vec![],
+            repository_scroll: UniformListScrollHandle::new(),
+            branch_scroll: UniformListScrollHandle::new(),
+            view: View::Working,
+            repository_preview: false,
+
+            history_search: cx.new(|cx| InputState::new(window, cx)),
+
+            commit_copied: false,
+            copy_feedback_task: None,
+            loading: false,
+
+            error: None,
+            load_task: None,
+            _subscriptions: vec![],
+            focus: cx.focus_handle(),
+        }
+    }
+
+    fn git(directory: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.test",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn tabs_retain_snapshots_and_route_pending_results_to_their_owner(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        std::fs::write(root.join("alpha.rs"), "ALPHA\n").unwrap();
+        std::fs::write(root.join("beta.rs"), "BETA\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "Initial"]);
+        git(root, &["branch", "older"]);
+        std::fs::write(root.join("beta.rs"), "HISTORY\n").unwrap();
+        git(root, &["commit", "-qam", "Second"]);
+        std::fs::write(root.join("alpha.rs"), "WORKING\n").unwrap();
+        let repo = Repository::open(root).unwrap();
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.repository = Some(repo.clone());
+                    app.preferences.remember_repository(repo.root.clone());
+                    app
+                })
+            })
+            .unwrap()
+        });
+        // Start both independent loads and leave History hidden before either finishes.
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                app.ensure_view_loaded(cx);
+                app.switch_view(View::Repositories, cx);
+                app.switch_view(View::Working, cx);
+                assert!(app.working.files_loading && app.history.loading);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.working.loaded && app.history.files.loaded);
+                assert_eq!(app.working.changes[0].path, PathBuf::from("alpha.rs"));
+                assert_eq!(app.history.files.changes[0].path, PathBuf::from("beta.rs"));
+                assert_eq!(app.history.files.selected_file, None);
+                assert_eq!(app.history.commits.len(), 2);
+                app.switch_view(View::History, cx);
+                assert!(app.history.files.patch_loading);
+                app.switch_view(View::Working, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(FILE_SELECTION_DELAY);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let app = app.read(cx);
+            assert_eq!(
+                app.working.diff.read(cx).files()[0].path().as_str(),
+                "alpha.rs"
+            );
+            assert_eq!(
+                app.history.files.diff.read(cx).files()[0].path().as_str(),
+                "beta.rs"
+            );
+            assert!(!app.history.files.patch_loading);
+        });
+        // No Git reads are possible now: revisiting loaded Tabs must still work.
+        std::fs::rename(root.join(".git"), root.join("git-hidden")).unwrap();
+        let (working_diff, history_diff, revision) = cx.update(|cx| {
+            let app = app.read(cx);
+            (
+                app.working.diff.entity_id(),
+                app.history.files.diff.entity_id(),
+                app.history.revision.clone(),
+            )
+        });
+        for target in [
+            View::History,
+            View::Repositories,
+            View::Working,
+            View::Repositories,
+            View::History,
+            View::Working,
+        ] {
+            cx.update_window(handle, |_, window, cx| {
+                app.update(cx, |app, cx| app.switch_view(target, cx));
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let app = app.read(cx);
+                assert!(!app.loading && !app.history.loading && !app.working.files_loading);
+                assert!(app.visible_error().is_none());
+                assert_eq!(app.working.diff.entity_id(), working_diff);
+                assert_eq!(app.history.files.diff.entity_id(), history_diff);
+                assert_eq!(app.history.revision, revision);
+                assert_eq!(app.history.selected_commit, Some(0));
+                assert_eq!(app.working.selected_file, Some(0));
+                assert_eq!(app.history.files.selected_file, Some(0));
+            });
+        }
+        // Reopening the selected file in Repos reuses the preview, including its identity.
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| app.switch_view(View::Repositories, cx));
+            window.render_frame(cx);
+            window.render_frame(cx);
+            window.click("tree-file-0", cx);
+            window.render_frame(cx);
+            assert!(app.read(cx).repository_preview);
+            assert!(!app.read(cx).history.files.patch_loading);
+            window.click("back-to-files", cx);
+            window.render_frame(cx);
+            window.click("tree-file-0", cx);
+            assert!(app.read(cx).repository_preview);
+            assert_eq!(app.read(cx).history.files.diff.entity_id(), history_diff);
+        })
+        .unwrap();
+        std::fs::rename(root.join("git-hidden"), root.join(".git")).unwrap();
+        // Changing a browsing branch must not discard or reread working changes.
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                // Set the saved choice in memory so the test never writes real preferences.
+                app.preferences
+                    .set_viewed_branch(&repo.root, Some("refs/heads/older".into()));
+                app.load_history_page(HistoryRequest::Branch(Some("refs/heads/older".into())), cx);
+                app.switch_view(View::Working, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let app = app.read(cx);
+            assert_eq!(app.working.diff.entity_id(), working_diff);
+            assert_eq!(app.history.commits.len(), 1);
+            assert_eq!(app.history.commits[0].subject, "Initial");
+            assert_eq!(app.history.files.changes.len(), 2);
+        });
+        // An empty search result is a loaded snapshot too, and survives all Tab changes.
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                app.history.query = "not present in either commit".into();
+                app.load_history_page(HistoryRequest::Search, cx);
+            })
+        });
+        cx.run_until_parked();
+        std::fs::rename(root.join(".git"), root.join("git-hidden")).unwrap();
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.history.files.loaded);
+                assert!(app.history.commits.is_empty());
+                for view in [
+                    View::Repositories,
+                    View::History,
+                    View::Working,
+                    View::History,
+                ] {
+                    app.switch_view(view, cx);
+                    assert!(!app.history.loading);
+                }
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert!(app.read(cx).visible_error().is_none()));
+    }
+
     #[gpui_kit::test]
     fn file_navigation_keeps_header_and_code_until_replacement_is_ready(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
@@ -1808,56 +2674,30 @@ mod tests {
         std::fs::write(directory.path().join("next.rs"), "NEXT\n").unwrap();
         let root = directory.path().to_path_buf();
         let (handle, app) = cx.update(|cx| {
-            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-                cx.new(|cx| Patchlook {
-                    preferences: Preferences::default(),
-                    repository: Some(Repository { root }),
-                    branch: "main".into(),
-                    branches: vec![],
-                    repository_scroll: UniformListScrollHandle::new(),
-                    branch_scroll: UniformListScrollHandle::new(),
-                    view: View::Working,
-                    changes: ["current.rs", "next.rs"]
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.repository = Some(Repository { root });
+                    app.working.loaded = true;
+                    app.working.changes = ["current.rs", "next.rs"]
                         .map(|path| Change {
                             path: path.into(),
                             previous_path: None,
                             status: 'A',
                             area: Area::Untracked,
                         })
-                        .to_vec(),
-                    file_stats: vec![],
-                    change_tree: None,
-                    tree_file_list: false,
-                    show_file_stats: false,
-                    total_stats: None,
-                    file_scroll: UniformListScrollHandle::new(),
-                    commit_scroll: UniformListScrollHandle::new(),
-                    commits: vec![],
-                    has_more: false,
-                    selected_commit: None,
-                    selected_file: Some(0),
-                    diff: cx.new(|cx| {
-                        DiffState::new(
+                        .to_vec();
+                    app.working.selected_file = Some(0);
+                    app.working.diff.update(cx, |diff, cx| {
+                        diff.set_files(
                             DiffFile::parse(
                                 "--- /dev/null\n+++ b/current.rs\n@@ -0,0 +1 @@\n+CURRENT\n",
                             )
                             .unwrap(),
                             cx,
                         )
-                    }),
-                    image: None,
-                    image_subscription: None,
-                    loading: false,
-                    files_loading: false,
-                    patch_loading: false,
-                    empty_patch: false,
-                    soft_wrap: true,
-                    error: None,
-                    load_task: None,
-                    commit_task: None,
-                    patch_task: None,
-                    _subscriptions: vec![],
-                    focus: cx.focus_handle(),
+                    });
+                    app
                 })
             })
             .unwrap()
@@ -1867,17 +2707,19 @@ mod tests {
             window.render_frame(cx);
             // The adjacent resize handle must not consume the list scrollbar's clicks.
             app.update(cx, |app, cx| {
-                app.changes.extend((2..42).map(|index| Change {
-                    path: format!("file-{index}.rs").into(),
-                    previous_path: None,
-                    status: 'A',
-                    area: Area::Untracked,
-                }));
+                app.active_files_mut()
+                    .changes
+                    .extend((2..42).map(|index| Change {
+                        path: format!("file-{index}.rs").into(),
+                        previous_path: None,
+                        status: 'A',
+                        area: Area::Untracked,
+                    }));
                 cx.notify();
             });
             window.render_frame(cx);
             window.render_frame(cx);
-            let scroll = app.read(cx).file_scroll.clone();
+            let scroll = app.read(cx).active_files().file_scroll.clone();
             // Scrolling reveals the auto-hiding bar before interacting with it.
             scroll.set_offset(point(px(0.), -px(20.)));
             window.render_frame(cx);
@@ -1922,9 +2764,11 @@ mod tests {
             );
             let header = window.find("collapse-file").bounds();
             app.update(cx, |app, cx| app.select_file(1, cx));
-            assert!(app.read(cx).patch_loading);
+            assert!(app.read(cx).active_files().patch_loading);
             assert_eq!(
-                app.read(cx).diff.read(cx).files()[0].path().as_str(),
+                app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .as_str(),
                 "current.rs"
             );
             window.render_frame(cx);
@@ -1937,13 +2781,37 @@ mod tests {
             );
         })
         .unwrap();
+        // Repeated selection cancels the pending load, preserving the old content.
+        for index in [0, 1] {
+            cx.run_until_parked();
+            cx.executor().advance_clock(FILE_SELECTION_DELAY / 2);
+            cx.update(|cx| app.update(cx, |app, cx| app.select_file(index, cx)));
+        }
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(FILE_SELECTION_DELAY - Duration::from_millis(1));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(app.read(cx).active_files().patch_loading);
+            assert_eq!(
+                app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .as_str(),
+                "current.rs"
+            );
+        });
+        cx.executor().advance_clock(Duration::from_millis(1));
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
-            assert!(!app.read(cx).patch_loading);
+            assert!(!app.read(cx).active_files().patch_loading);
             assert_eq!(
-                app.read(cx).diff.read(cx).files()[0].path().as_str(),
+                app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .as_str(),
                 "next.rs"
             );
+            app.update(cx, |app, cx| app.select_file(1, cx));
+            assert!(!app.read(cx).active_files().patch_loading);
             window.render_frame(cx);
             window.render_frame(cx);
             assert!(
@@ -1961,25 +2829,27 @@ mod tests {
         .unwrap();
         cx.update_window(handle, |_, window, cx| {
             app.update(cx, |app, cx| {
-                app.changes.push(Change {
+                app.active_files_mut().changes.push(Change {
                     path: "picture.png".into(),
                     previous_path: None,
                     status: 'A',
                     area: Area::Untracked,
                 });
-                app.select_file(app.changes.len() - 1, cx);
+                app.select_file(app.active_files().changes.len() - 1, cx);
             });
             window.render_frame(cx);
             assert!(window.try_find("soft-wrap").is_some());
-            assert!(app.read(cx).image.is_none());
+            assert!(app.read(cx).active_files().image.is_none());
         })
         .unwrap();
+        cx.run_until_parked();
+        cx.executor().advance_clock(FILE_SELECTION_DELAY);
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             window.render_frame(cx);
-            assert!(app.read(cx).image.is_some());
-            assert!(app.read(cx).diff.read(cx).files().is_empty());
+            assert!(app.read(cx).active_files().image.is_some());
+            assert!(app.read(cx).active_files().diff.read(cx).files().is_empty());
             assert!(window.try_find("soft-wrap").is_none());
             assert!(window.try_find("image-fit").is_some());
             window.click("image-actual", cx);
@@ -1990,9 +2860,11 @@ mod tests {
         })
         .unwrap();
         cx.run_until_parked();
+        cx.executor().advance_clock(FILE_SELECTION_DELAY);
+        cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            assert!(app.read(cx).image.is_none());
+            assert!(app.read(cx).active_files().image.is_none());
             assert!(window.try_find("image-fit").is_none());
             assert!(window.try_find("soft-wrap").is_some());
         })
@@ -2034,7 +2906,7 @@ mod tests {
                 app.preferences.remember_repository(repository.root.clone());
                 app.repository = Some(repository);
                 app.branches = branches;
-                app.commits = commits;
+                app.history.commits = commits;
                 app.view = View::Repositories;
                 app.select_commit(0, cx);
             });
@@ -2045,7 +2917,8 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             window.render_frame(cx);
-            assert_eq!(app.read(cx).selected_file, None);
+            assert_eq!(app.read(cx).active_files().selected_file, None);
+            assert!((repository_sidebar_ratio(window) - 0.5).abs() < 0.01);
             let repo_row = window.find(("repository", 0usize)).bounds();
             let commit_row = window.find(("commit", 0usize)).bounds();
             let file_row = window.find("tree-file-0").bounds();
@@ -2054,16 +2927,94 @@ mod tests {
             assert!(!window.find(("browse-branch", 1usize)).visible());
             window.hover(("branch", 1usize), cx);
             assert!(window.find(("browse-branch", 1usize)).visible());
-            window.click("tree-file-0", cx);
+            // Selecting the message after searching must copy the message, not the input.
+            app.update(cx, |app, cx| {
+                app.history.search_available = true;
+                app.history_search.update(cx, |input, cx| {
+                    input.focus(window, cx);
+                    input.set_value("search text", window, cx);
+                });
+            });
+            window.render_frame(cx);
+            window.render_frame(cx);
+            window.press("escape", cx);
         })
         .unwrap();
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
+            assert_eq!(window.focused(cx), Some(app.read(cx).focus.clone()));
+            assert_eq!(
+                app.read(cx).history_search.read(cx).value().as_str(),
+                "search text"
+            );
+            app.read(cx)
+                .history_search
+                .clone()
+                .update(cx, |input, cx| input.focus(window, cx));
             window.render_frame(cx);
-            assert!(app.read(cx).selected_file.is_some());
+            let message = window.find("commit-message").bounds();
+            let position = message.origin + point(px(30.), px(16.));
+            window.dispatch_event(
+                MouseDownEvent {
+                    position,
+                    button: MouseButton::Left,
+                    click_count: 2,
+                    modifiers: Modifiers::default(),
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseUpEvent {
+                    position,
+                    button: MouseButton::Left,
+                    click_count: 2,
+                    modifiers: Modifiers::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            let selected = gpui_kit::base::TextSelection::selected_text(window, cx);
+            assert_eq!(selected, "Repository");
+            assert_eq!(window.focused(cx), Some(app.read(cx).focus.clone()));
+            cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+            window.dispatch_action(Box::new(component::input::Copy), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "Repository"
+            );
+            window.click("copy-commit-id", cx);
+            assert!(app.read(cx).commit_copied);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                app.read(cx).history.commits[0].id
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.executor().advance_clock(COPY_FEEDBACK_DURATION);
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            assert!(!app.read(cx).commit_copied);
+            window.click("tree-file-0", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.executor().advance_clock(FILE_SELECTION_DELAY);
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(app.read(cx).active_files().selected_file.is_some());
             window.click("back-to-files", cx);
-            assert_eq!(app.read(cx).selected_file, None);
-            assert_eq!(app.read(cx).selected_commit, Some(0));
+            assert!(!app.read(cx).repository_preview);
+            assert_eq!(app.read(cx).active_files().selected_file, Some(0));
+            assert_eq!(app.read(cx).history.selected_commit, Some(0));
             assert!(window.try_find("tree-file-0").is_some());
             app.update(cx, |app, cx| {
                 app.view = View::History;
@@ -2072,17 +3023,32 @@ mod tests {
         })
         .unwrap();
         cx.run_until_parked();
+        cx.executor().advance_clock(FILE_SELECTION_DELAY);
+        cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                let repo = app.repository.as_ref().unwrap();
+                let prepared = PreparedChanges::load(
+                    repo,
+                    app.history.files.changes.clone(),
+                    app.current_commit(),
+                    true,
+                )
+                .unwrap();
+                app.apply_changes(Source::Working, prepared, cx);
+            });
             for view in [View::History, View::Working] {
                 app.update(cx, |app, cx| {
                     app.view = view;
-                    app.show_file_stats = false;
+                    app.preferences.show_file_stats = false;
                     cx.notify();
                 });
                 window.render_frame(cx);
                 window.render_frame(cx);
-                let selected = app.read(cx).selected_file;
-                let diff_path = app.read(cx).diff.read(cx).files()[0].path().clone();
+                let selected = app.read(cx).active_files().selected_file;
+                let diff_path = app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .clone();
                 assert!(window.find_all("file-diff-stats").is_empty());
                 window.click("toggle-file-stats", cx);
                 window.render_frame(cx);
@@ -2095,7 +3061,7 @@ mod tests {
                 window.render_frame(cx);
                 window.render_frame(cx);
                 assert!(window.try_find("tree-file-0").is_some());
-                assert!(app.read(cx).tree_file_list);
+                assert!(app.read(cx).preferences.tree_file_list);
                 let total_right = window.find("change-totals").bounds().right();
                 for stats in window.find_all("file-diff-stats") {
                     assert!((stats.bounds().right() - total_right).abs() < px(1.));
@@ -2103,18 +3069,78 @@ mod tests {
                 window.click("toggle-file-list", cx);
                 window.render_frame(cx);
                 assert!(window.try_find(("file", 0usize)).is_some());
-                assert_eq!(app.read(cx).selected_file, selected);
-                assert!(!app.read(cx).patch_loading);
-                assert_eq!(app.read(cx).diff.read(cx).files()[0].path(), &diff_path);
+                assert_eq!(app.read(cx).active_files().selected_file, selected);
+                assert!(!app.read(cx).active_files().patch_loading);
+                assert_eq!(
+                    app.read(cx).active_files().diff.read(cx).files()[0].path(),
+                    &diff_path
+                );
             }
+        })
+        .unwrap();
+        // The footer toggle is available in both history layouts and keeps parsed content intact.
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| app.switch_view(View::History, cx));
+            window.render_frame(cx);
+            let diff = app.read(cx).history.files.diff.entity_id();
+            let selected = app.read(cx).history.selected_commit;
+            assert!(window.find("toggle-commit-message").checked().unwrap());
+            assert!(window.try_find("commit-message").is_some());
+            window.click("toggle-commit-message", cx);
+            window.render_frame(cx);
+            assert!(!window.find("toggle-commit-message").checked().unwrap());
+            assert!(window.try_find("commit-message").is_none());
+            let saved: Preferences = serde_json::from_slice(
+                &std::fs::read(
+                    app.read(cx)
+                        .preferences_directory
+                        .path()
+                        .join("preferences.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(!saved.show_commit_message);
+            app.update(cx, |app, cx| app.switch_view(View::Repositories, cx));
+            window.render_frame(cx);
+            assert!(window.try_find("commit-message").is_none());
+            window.click("toggle-commit-message", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("commit-message").is_some());
+            assert_eq!(app.read(cx).history.files.diff.entity_id(), diff);
+            assert_eq!(app.read(cx).history.selected_commit, selected);
+            assert!(!app.read(cx).history.files.patch_loading);
+            app.update(cx, |app, cx| app.switch_view(View::Working, cx));
+            window.render_frame(cx);
+            assert!(window.try_find("toggle-commit-message").is_none());
+            assert!(window.try_find("commit-message").is_none());
+            window.click("soft-wrap", cx);
+            window.render_frame(cx);
+            let saved: Preferences = serde_json::from_slice(
+                &std::fs::read(
+                    app.read(cx)
+                        .preferences_directory
+                        .path()
+                        .join("preferences.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let current = &app.read(cx).preferences;
+            assert_eq!(saved.soft_wrap, current.soft_wrap);
+            assert_eq!(saved.tree_file_list, current.tree_file_list);
+            assert_eq!(saved.show_file_stats, current.show_file_stats);
+            assert_eq!(saved.show_commit_message, current.show_commit_message);
         })
         .unwrap();
         // Drain menu dismissal between languages, as the native event loop does.
         let original_locale = component::locale().to_string();
         let (selected, diff_path) = cx.update(|cx| {
             (
-                app.read(cx).selected_file,
-                app.read(cx).diff.read(cx).files()[0].path().clone(),
+                app.read(cx).active_files().selected_file,
+                app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .clone(),
             )
         });
         for language in Language::ALL {
@@ -2130,9 +3156,12 @@ mod tests {
                     Some(tr("open_repository"))
                 );
                 assert_eq!(window.find("soft-wrap").label(), Some(tr("soft_wrap")));
-                assert_eq!(app.read(cx).selected_file, selected);
-                assert_eq!(app.read(cx).diff.read(cx).files()[0].path(), &diff_path);
-                assert!(!app.read(cx).patch_loading);
+                assert_eq!(app.read(cx).active_files().selected_file, selected);
+                assert_eq!(
+                    app.read(cx).active_files().diff.read(cx).files()[0].path(),
+                    &diff_path
+                );
+                assert!(!app.read(cx).active_files().patch_loading);
                 window.click("language", cx);
             })
             .unwrap();
@@ -2155,5 +3184,162 @@ mod tests {
             cx.run_until_parked();
         }
         component::set_locale(&original_locale);
+        // Commit changes and their first diff replace the old snapshot together.
+        std::fs::write(directory.path().join("later.rs"), "LATER\n").unwrap();
+        for args in [
+            vec!["add", "later.rs"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "Later commit",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(directory.path())
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        let latest = Repository::open(directory.path())
+            .unwrap()
+            .history(0, None)
+            .unwrap()
+            .commits
+            .remove(0);
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                app.view = View::History;
+                app.history.commits.push(latest);
+                let files = app
+                    .active_files()
+                    .changes
+                    .iter()
+                    .map(|change| change.path.clone())
+                    .collect::<Vec<_>>();
+                let old_patch = app.active_files_mut().diff.read(cx).files()[0]
+                    .path()
+                    .clone();
+                app.select_commit(1, cx);
+                assert_eq!(app.history.selected_commit, Some(0));
+                assert_eq!(
+                    app.active_files_mut()
+                        .changes
+                        .iter()
+                        .map(|change| change.path.clone())
+                        .collect::<Vec<_>>(),
+                    files
+                );
+                assert_eq!(
+                    app.active_files_mut().diff.read(cx).files()[0].path(),
+                    &old_patch
+                );
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find_all("source")
+                    .iter()
+                    .any(|line| line.label() == Some("NEXT"))
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            assert_eq!(app.read(cx).history.selected_commit, Some(1));
+            assert_eq!(
+                app.read(cx).active_files().changes[0].path,
+                PathBuf::from("later.rs")
+            );
+            assert_eq!(
+                app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .as_str(),
+                "later.rs"
+            );
+            assert!(!app.read(cx).active_files().patch_loading);
+            app.update(cx, |app, cx| {
+                app.load(directory.path().join("missing-repository"), cx)
+            });
+            assert_eq!(app.read(cx).history.selected_commit, Some(1));
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find_all("source")
+                    .iter()
+                    .any(|line| line.label() == Some("LATER"))
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(app.read(cx).error.is_some());
+            assert_eq!(app.read(cx).history.selected_commit, Some(1));
+            assert_eq!(
+                app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .as_str(),
+                "later.rs"
+            );
+        });
+        // A new window gets its initial ratio from serialized preferences, not old layout state.
+        cx.update(|cx| {
+            app.update(cx, |app, _| {
+                app.view = View::Repositories;
+                app.error = None;
+                app.preferences.repository_sidebar_ratio = Some(0.35);
+                app.preferences =
+                    serde_json::from_slice(&serde_json::to_vec(&app.preferences).unwrap()).unwrap();
+            })
+        });
+        let (restored, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, _| app.clone()).unwrap()
+        });
+        cx.update_window(restored, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!((repository_sidebar_ratio(window) - 0.35).abs() < 0.01);
+        })
+        .unwrap();
+        // Tab switches retain separate snapshots, and Repos/History share the same one.
+        let (working_diff, history_diff, commit) = cx.update(|cx| {
+            let app = app.read(cx);
+            (
+                app.working.diff.entity_id(),
+                app.history.files.diff.entity_id(),
+                app.history.selected_commit,
+            )
+        });
+        for target in [
+            View::Working,
+            View::History,
+            View::Repositories,
+            View::History,
+            View::Working,
+        ] {
+            cx.update_window(handle, |_, window, cx| {
+                app.update(cx, |app, cx| app.switch_view(target, cx));
+                window.render_frame(cx);
+                let app = app.read(cx);
+                assert!(!app.loading);
+                assert_eq!(app.working.diff.entity_id(), working_diff);
+                assert_eq!(app.history.files.diff.entity_id(), history_diff);
+                assert_eq!(app.history.selected_commit, commit);
+                if target == View::Working {
+                    assert!(window.try_find("commit-message").is_none());
+                }
+            })
+            .unwrap();
+        }
     }
 }

@@ -2,8 +2,9 @@
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     collections::HashMap,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 pub const HISTORY_PAGE_SIZE: usize = 100;
@@ -88,6 +89,7 @@ pub struct Commit {
 pub struct HistoryPage {
     pub commits: Vec<Commit>,
     pub has_more: bool,
+    pub revision: Option<String>,
 }
 
 fn command(root: &Path) -> Command {
@@ -172,7 +174,7 @@ impl Repository {
         bail!("{}", String::from_utf8_lossy(&result.stderr).trim())
     }
 
-    pub fn snapshot(&self) -> Result<Snapshot> {
+    pub fn branch_name(&self) -> Result<String> {
         let branch_result = command(&self.root)
             .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
             .output()?;
@@ -188,6 +190,11 @@ impl Repository {
         } else {
             bail!("{}", String::from_utf8_lossy(&branch_result.stderr).trim());
         };
+        Ok(branch)
+    }
+
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        let branch = self.branch_name()?;
         let bytes = output(
             command(&self.root).args([
                 "status",
@@ -239,48 +246,74 @@ impl Repository {
     }
 
     pub fn history(&self, offset: usize, revision: Option<&str>) -> Result<HistoryPage> {
+        self.history_filtered(offset, revision, "")
+    }
+
+    /// Search the full reachable history, keeping only one page in memory.
+    /// Message matching is case-insensitive; hashes match by prefix.
+    pub fn history_filtered(
+        &self,
+        offset: usize,
+        revision: Option<&str>,
+        query: &str,
+    ) -> Result<HistoryPage> {
         if revision.is_none() && !self.has_head()? {
             return Ok(HistoryPage {
                 commits: vec![],
                 has_more: false,
+                revision: None,
             });
         }
-        let bytes = output(
-            command(&self.root).args([
-                "log",
-                "-z",
-                "--date=short",
-                "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%P%x00%b",
-                &format!("--max-count={}", HISTORY_PAGE_SIZE + 1),
-                &format!("--skip={offset}"),
-                revision.unwrap_or("HEAD"),
-                "--",
-            ]),
+        let revision = text(output(
+            command(&self.root)
+                .args(["rev-parse", "--verify"])
+                .arg(format!("{}^{{commit}}", revision.unwrap_or("HEAD"))),
             false,
-        )?;
-        let mut fields: Vec<_> = bytes.split(|b| *b == 0).collect();
-        if fields.last() == Some(&&b""[..]) {
-            fields.pop();
+        )?)?
+        .trim()
+        .to_owned();
+        let query = query.trim().to_lowercase();
+        let mut cmd = command(&self.root);
+        cmd.args([
+            "log",
+            "-z",
+            "--date=short",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%P%x00%b",
+        ]);
+        if query.is_empty() {
+            cmd.arg(format!("--max-count={}", HISTORY_PAGE_SIZE + 1))
+                .arg(format!("--skip={offset}"));
         }
-        ensure!(fields.len() % 7 == 0, "Invalid Git history response");
-        let mut commits = fields
-            .chunks_exact(7)
-            .map(|f| Commit {
-                id: String::from_utf8_lossy(f[0]).into_owned(),
-                short_id: String::from_utf8_lossy(f[1]).into_owned(),
-                author: String::from_utf8_lossy(f[2]).into_owned(),
-                date: String::from_utf8_lossy(f[3]).into_owned(),
-                subject: String::from_utf8_lossy(f[4]).into_owned(),
-                body: String::from_utf8_lossy(f[6]).trim_end().to_owned(),
-                parents: String::from_utf8_lossy(f[5])
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
+        let mut child = cmd
+            .args([revision.as_str(), "--"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Cannot start Git history search")?;
+        let result = read_history_matches(
+            BufReader::new(child.stdout.take().expect("Git stdout was piped")),
+            if query.is_empty() { 0 } else { offset },
+            &query,
+        );
+        // Once a page and its lookahead are ready, stop scanning older commits.
+        let stopped = result
+            .as_ref()
+            .map_or(true, |commits| commits.len() > HISTORY_PAGE_SIZE);
+        if stopped {
+            let _ = child.kill();
+        }
+        let output = child.wait_with_output()?;
+        if !stopped && !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        let mut commits = result?;
         let has_more = commits.len() > HISTORY_PAGE_SIZE;
         commits.truncate(HISTORY_PAGE_SIZE);
-        Ok(HistoryPage { commits, has_more })
+        Ok(HistoryPage {
+            commits,
+            has_more,
+            revision: Some(revision),
+        })
     }
 
     pub fn commit_changes(&self, commit: &Commit) -> Result<Vec<Change>> {
@@ -549,6 +582,50 @@ fn parse_numstat(bytes: &[u8]) -> Result<HashMap<PathBuf, Option<DiffStats>>> {
         stats.insert(path(name)?, lines);
     }
     Ok(stats)
+}
+
+fn read_history_matches(
+    mut reader: impl BufRead,
+    offset: usize,
+    query: &str,
+) -> Result<Vec<Commit>> {
+    let mut commits = Vec::new();
+    let mut matched = 0;
+    loop {
+        let mut fields = Vec::with_capacity(7);
+        for index in 0..7 {
+            let mut field = Vec::new();
+            if reader.read_until(0, &mut field)? == 0 {
+                ensure!(index == 0, "Incomplete Git history record");
+                return Ok(commits);
+            }
+            ensure!(field.pop() == Some(0), "Invalid Git history field");
+            fields.push(String::from_utf8_lossy(&field).into_owned());
+        }
+        let commit = Commit {
+            id: fields[0].clone(),
+            short_id: fields[1].clone(),
+            author: fields[2].clone(),
+            date: fields[3].clone(),
+            subject: fields[4].clone(),
+            parents: fields[5].split_whitespace().map(str::to_owned).collect(),
+            body: fields[6].trim_end().to_owned(),
+        };
+        if !query.is_empty()
+            && !commit.id.starts_with(query)
+            && !commit.subject.to_lowercase().contains(query)
+            && !commit.body.to_lowercase().contains(query)
+        {
+            continue;
+        }
+        if matched >= offset {
+            commits.push(commit);
+        }
+        matched += 1;
+        if commits.len() > HISTORY_PAGE_SIZE {
+            return Ok(commits);
+        }
+    }
 }
 
 fn parse_status(bytes: &[u8]) -> Result<Vec<Change>> {
@@ -1038,6 +1115,104 @@ mod tests {
         for line in [0, 50, 119] {
             assert!(patch.contains(&format!(" line_{line}\n")));
         }
+    }
+
+    #[test]
+    fn history_search_covers_older_messages_hashes_and_stable_filtered_pages() {
+        let (_temp, repo) = fixture();
+        for index in 0..HISTORY_PAGE_SIZE + 3 {
+            run(
+                &repo.root,
+                &[
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    &format!("Earlier change {index}"),
+                    "-m",
+                    "Body includes Needle[.] and 中文关键词",
+                ],
+            );
+        }
+        for index in 0..HISTORY_PAGE_SIZE {
+            run(
+                &repo.root,
+                &[
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    &format!("Recent change {index}"),
+                ],
+            );
+        }
+        let recent = repo.history(0, None).unwrap();
+        assert!(
+            recent
+                .commits
+                .iter()
+                .all(|commit| commit.subject.starts_with("Recent"))
+        );
+        let first = repo.history_filtered(0, None, "nEEdLe[.]").unwrap();
+        assert_eq!(first.commits.len(), HISTORY_PAGE_SIZE);
+        assert!(first.has_more);
+        assert_eq!(first.revision, recent.revision);
+        assert!(
+            first
+                .commits
+                .iter()
+                .all(|commit| commit.subject.starts_with("Earlier"))
+        );
+        run(
+            &repo.root,
+            &["commit", "--allow-empty", "-qm", "New Needle[.] match"],
+        );
+        let second = repo
+            .history_filtered(HISTORY_PAGE_SIZE, first.revision.as_deref(), "Needle[.]")
+            .unwrap();
+        assert_eq!(second.commits.len(), 3);
+        assert!(!second.has_more);
+        assert!(
+            second
+                .commits
+                .iter()
+                .all(|commit| !first.commits.iter().any(|old| old.id == commit.id))
+        );
+        let hash = &second.commits[0].id;
+        let by_hash = repo
+            .history_filtered(0, None, &hash[..10].to_uppercase())
+            .unwrap();
+        assert_eq!(by_hash.commits.len(), 1);
+        assert_eq!(&by_hash.commits[0].id, hash);
+        assert_eq!(
+            repo.history_filtered(0, None, "中文关键词")
+                .unwrap()
+                .commits
+                .len(),
+            HISTORY_PAGE_SIZE
+        );
+        assert!(
+            repo.history_filtered(0, None, "Needle.*")
+                .unwrap()
+                .commits
+                .is_empty()
+        );
+        run(&repo.root, &["checkout", "-qb", "other"]);
+        run(
+            &repo.root,
+            &["commit", "--allow-empty", "-qm", "Only on other branch"],
+        );
+        assert!(
+            repo.history_filtered(0, Some("refs/heads/main"), "Only on other")
+                .unwrap()
+                .commits
+                .is_empty()
+        );
+        assert_eq!(
+            repo.history_filtered(0, Some("refs/heads/other"), "Only on other")
+                .unwrap()
+                .commits
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -93,6 +93,8 @@ def main() -> None:
     dist = root / "dist"
     dist.mkdir(exist_ok=True)
     artifact = f"{package_name}-{version}-{system.lower()}-{platform.machine().lower()}"
+    icon_license = root / "assets" / "file-icons" / "LICENSE"
+    icon_license_name = "MaterialIconTheme-LICENSE.txt"
 
     if system == "Darwin":
         app = dist / f"{display_name}.app"
@@ -102,6 +104,7 @@ def main() -> None:
         (contents / "MacOS").mkdir(parents=True, exist_ok=True)
         (contents / "Resources").mkdir(exist_ok=True)
         shutil.copy2(binary, contents / "MacOS" / package_name)
+        shutil.copy2(icon_license, contents / "Resources" / icon_license_name)
         icon = contents / "Resources" / "AppIcon.icns"
         create_macos_icon(root / "assets" / "app-icon" / "patchlook-v2.png", icon)
         info = {
@@ -146,11 +149,13 @@ def main() -> None:
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as out:
             out.write(binary, name)
             out.write(root / "README.md", "README.md")
+            out.write(icon_license, icon_license_name)
     else:
         archive = dist / f"{artifact}.tar.gz"
         with tarfile.open(archive, "w:gz") as out:
             out.add(binary, arcname=name)
             out.add(root / "README.md", arcname="README.md")
+            out.add(icon_license, arcname=icon_license_name)
     print(archive)
 
 

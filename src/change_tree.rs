@@ -1,9 +1,10 @@
 use crate::{
-    image_diff::image_format,
+    file_icons::file_icon,
     strings::{area_label, tr},
 };
 use gpui_kit::{
     assets::IconName,
+    base::actions::{SelectLeft, SelectRight},
     base::{TestSupportExt, Tree, TreeItem, TreeState},
     component::{
         ActiveTheme, Icon, Sizable, h_flex,
@@ -25,8 +26,8 @@ struct Node {
     file_index: Option<usize>,
     file_count: usize,
     status: char,
-    icon: IconName,
     path: SharedString,
+    move_source: Option<SharedString>,
     stats: Option<DiffStats>,
     area: Option<Area>,
 }
@@ -105,12 +106,8 @@ impl Directory {
                     file_index: Some(index),
                     file_count: 1,
                     status: change.status,
-                    icon: if image_format(&change.path).is_some() {
-                        IconName::Image
-                    } else {
-                        IconName::FileText
-                    },
                     path: change.path.display().to_string().into(),
+                    move_source: move_source(change),
                     stats: stats[index],
                     area: Some(change.area),
                 },
@@ -144,8 +141,8 @@ impl Directory {
                 file_index: None,
                 file_count: count,
                 status: ' ',
-                icon: IconName::Folder,
                 path: full_path.display().to_string().into(),
+                move_source: None,
                 stats: Some(stats),
                 area: None,
             },
@@ -158,8 +155,83 @@ fn file_id(index: usize) -> SharedString {
     format!("tree-file-{index}").into()
 }
 
+fn move_source(change: &Change) -> Option<SharedString> {
+    if change.status != 'R' {
+        return None;
+    }
+    let previous = change.previous_path.as_deref()?;
+    let same_name = previous.file_name() == change.path.file_name();
+    let source = previous
+        .parent()
+        .unwrap_or(Path::new(""))
+        .components()
+        .collect::<Vec<_>>();
+    let destination = change
+        .path
+        .parent()
+        .unwrap_or(Path::new(""))
+        .components()
+        .collect::<Vec<_>>();
+    let common = source
+        .iter()
+        .zip(&destination)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut parts = vec!["..".to_owned(); destination.len() - common];
+    parts.extend(
+        source[common..]
+            .iter()
+            .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+    );
+    if !same_name {
+        parts.push(
+            previous
+                .file_name()
+                .unwrap_or(previous.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    let mut source = parts.join("/");
+    if same_name {
+        source.push('/');
+    }
+    Some(source.into())
+}
+
 fn has_collapsed_directory(item: &TreeItem) -> bool {
     item.is_folder() && (!item.is_expanded() || item.children.iter().any(has_collapsed_directory))
+}
+
+fn navigate_tree(state: &Entity<TreeState>, right: bool, cx: &mut App) -> bool {
+    state.update(cx, |tree, cx| {
+        let Some(index) = tree.selected_index() else {
+            return false;
+        };
+        let Some(entry) = tree.entry(index) else {
+            return false;
+        };
+        if entry.is_folder() && entry.is_expanded() != right {
+            // Let Tree's existing action expand or collapse the selected folder.
+            return false;
+        }
+        let next = if right {
+            tree.entry(index + 1).map(|_| index + 1)
+        } else {
+            let depth = entry.depth();
+            (0..index).rev().find(|index| {
+                tree.entry(*index)
+                    .is_some_and(|entry| entry.depth() < depth)
+            })
+        };
+        if let Some(next) = next {
+            tree.set_selected_index(Some(next), cx);
+            tree.scroll_to_item(next, ScrollStrategy::Center);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 fn set_directories_expanded(mut item: TreeItem, expanded: bool) -> TreeItem {
@@ -172,6 +244,15 @@ fn set_directories_expanded(mut item: TreeItem, expanded: bool) -> TreeItem {
         item = item.expanded(expanded);
     }
     item
+}
+
+pub fn file_status_color(status: char, cx: &App) -> Hsla {
+    match status {
+        'A' | 'C' => cx.theme().green,
+        'D' => cx.theme().muted_foreground,
+        'U' => cx.theme().danger,
+        _ => cx.theme().blue,
+    }
 }
 
 pub fn stats_label(stats: Option<DiffStats>, cx: &App) -> impl IntoElement {
@@ -208,6 +289,7 @@ impl ChangeTree {
         stats: &[Option<DiffStats>],
         repository: &Path,
         cx: &mut Context<T>,
+        on_file: impl Fn(&mut T, usize, &mut Context<T>) + 'static,
     ) -> Self {
         let mut nodes = HashMap::new();
         let root = Directory::from_changes(changes).into_item(
@@ -224,10 +306,21 @@ impl ChangeTree {
         );
         nodes.get_mut(&root.id).unwrap().path = repository.display().to_string().into();
         let state = cx.new(|cx| TreeState::new(cx).items(vec![root]));
-        let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+        let nodes = Rc::new(nodes);
+        let selection_nodes = nodes.clone();
+        let subscription = cx.observe(&state, move |owner, state, cx| {
+            let file = state
+                .read(cx)
+                .selected_item()
+                .and_then(|item| selection_nodes[&item.id].file_index);
+            if let Some(index) = file {
+                on_file(owner, index, cx);
+            }
+            cx.notify();
+        });
         Self {
             state,
-            nodes: Rc::new(nodes),
+            nodes,
             _subscription: subscription,
         }
     }
@@ -265,11 +358,14 @@ impl ChangeTree {
         branch: String,
         show_stats: bool,
         working: bool,
+        on_activate_file: impl Fn(&usize, &mut Window, &mut App) + 'static,
         cx: &App,
-        on_file: impl Fn(usize, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
+        let on_activate_file = Rc::new(on_activate_file);
         let nodes = self.nodes.clone();
-        let on_file = Rc::new(on_file);
+        let left_state = self.state.clone();
+        let right_state = self.state.clone();
+        let focus_state = self.state.clone();
         let scroll = self
             .state
             .read_with(cx, |state, _| state.scroll_handle().clone());
@@ -278,6 +374,23 @@ impl ChangeTree {
             .size_full()
             .min_h_0()
             .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                focus_state.update(cx, |tree, cx| tree.focus(window, cx));
+            })
+            .capture_action(move |_: &SelectLeft, _, cx| {
+                if navigate_tree(&left_state, false, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            })
+            .capture_action(move |_: &SelectRight, _, cx| {
+                if navigate_tree(&right_state, true, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            })
             .child(
                 Tree::new(&self.state)
                     .size_full()
@@ -285,18 +398,23 @@ impl ChangeTree {
                     .item(move |_, entry, state, _, cx| {
                         let item = entry.item();
                         let node = &nodes[&item.id];
-                        let on_file = on_file.clone();
                         let file_index = node.file_index;
-                        let path = node.path.clone();
-                        let status_color = match node.status {
-                            'A' => cx.theme().success,
-                            'D' => cx.theme().danger,
-                            _ => cx.theme().warning,
+                        let activate = on_activate_file.clone();
+                        let move_annotation = node.move_source.as_ref().map(|source| {
+                            (
+                                format!("← {source}"),
+                                tr("moved_from").replace("{path}", source),
+                            )
+                        });
+                        let tooltip = match &move_annotation {
+                            Some((_, label)) => format!("{}\n{label}", node.path).into(),
+                            None => node.path.clone(),
                         };
+                        let status_color = file_status_color(node.status, cx);
                         h_flex()
                             .id(item.id.clone())
                             .test_support()
-                            .h(px(28.))
+                            .h(px(22.))
                             .w_full()
                             .min_w_0()
                             .pr_2()
@@ -304,9 +422,19 @@ impl ChangeTree {
                             .gap_2()
                             .text_sm()
                             .cursor_pointer()
-                            .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            })
                             .when(state.is_selected(), |row| {
-                                row.bg(cx.theme().secondary_active)
+                                row.bg(cx.theme().secondary_active).when_some(
+                                    file_index,
+                                    |row, index| {
+                                        // Activating an already-selected file can reopen its preview.
+                                        row.on_click(move |_, window, cx| {
+                                            activate(&index, window, cx)
+                                        })
+                                    },
+                                )
                             })
                             .hover(|style| {
                                 style.bg(if state.is_selected() {
@@ -332,18 +460,40 @@ impl ChangeTree {
                                             .xsmall()
                                             .text_color(cx.theme().muted_foreground),
                                         )
-                                    })
-                                    .when(file_index.is_some(), |slot| {
-                                        slot.child(node.status.to_string())
                                     }),
                             )
-                            .child(
-                                Icon::new(node.icon)
+                            .child(if file_index.is_some() {
+                                file_icon(Path::new(node.path.as_str())).into_any_element()
+                            } else {
+                                Icon::new(IconName::Folder)
                                     .small()
                                     .flex_none()
-                                    .text_color(cx.theme().muted_foreground),
+                                    .text_color(cx.theme().muted_foreground)
+                                    .into_any_element()
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .when(file_index.is_some(), |label| {
+                                        label.text_color(status_color)
+                                    })
+                                    .child(item.label.clone()),
                             )
-                            .child(div().min_w_0().truncate().child(item.label.clone()))
+                            .when_some(move_annotation, |row, (source, label)| {
+                                row.child(
+                                    div()
+                                        .id("tree-move-source")
+                                        .test_support()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .role(accesskit::Role::Label)
+                                        .aria_label(label)
+                                        .child(source),
+                                )
+                            })
                             .when(file_index.is_none(), |row| {
                                 row.child(
                                     div()
@@ -384,9 +534,6 @@ impl ChangeTree {
                                     .child(stats_label(node.stats, cx))
                                 },
                             )
-                            .when_some(file_index, |row, index| {
-                                row.on_click(move |_, window, cx| on_file(index, window, cx))
-                            })
                             .into_any_element()
                     }),
             )
@@ -444,6 +591,34 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    #[test]
+    fn move_sources_are_relative_to_the_destination_directory() {
+        for (previous, current, expected) in [
+            (
+                ".codex/project-state.md",
+                ".agents/project-state.md",
+                "../.codex/",
+            ),
+            ("src/old.rs", "src/new.rs", "old.rs"),
+            ("src/old.rs", "lib/new.rs", "../src/old.rs"),
+            ("README.md", "docs/README.md", "../"),
+            ("docs/README.md", "README.md", "docs/"),
+            ("old.md", "new.md", "old.md"),
+            ("old.txt", "old.txt/new.txt", "../old.txt"),
+            ("资料/旧 名.txt", "文档/新 名.txt", "../资料/旧 名.txt"),
+        ] {
+            let mut change = Change {
+                path: current.into(),
+                previous_path: Some(previous.into()),
+                status: 'R',
+                area: Area::Staged,
+            };
+            assert_eq!(move_source(&change).as_deref(), Some(expected));
+            change.status = 'C';
+            assert!(move_source(&change).is_none());
+        }
     }
 
     #[test]
@@ -545,24 +720,102 @@ mod tests {
     }
     impl Render for Viewer {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let opened = self.opened.clone();
-            self.tree.render(
-                "main".into(),
-                self.show_stats,
-                false,
-                cx,
-                move |index, _, _| opened.set(Some(index)),
-            )
+            self.tree
+                .render("main".into(), self.show_stats, false, |_, _, _| {}, cx)
         }
     }
 
     #[gpui_kit::test]
-    fn folder_clicks_fold_and_leaf_clicks_open_the_original_file(cx: &mut TestAppContext) {
+    fn arrow_keys_walk_parents_children_and_following_entries(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let (handle, viewer) = cx.update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
                 cx.new(|cx| Viewer {
-                    tree: ChangeTree::new(&changes(), &stats(), Path::new("repository"), cx),
+                    tree: ChangeTree::new(
+                        &changes(),
+                        &stats(),
+                        Path::new("repository"),
+                        cx,
+                        |viewer: &mut Viewer, index, _| viewer.opened.set(Some(index)),
+                    ),
+                    show_stats: false,
+                    opened: Rc::new(Cell::new(None)),
+                })
+            })
+            .unwrap()
+        });
+        let select = |action: Box<dyn Action>, cx: &mut TestAppContext| {
+            cx.update_window(handle, |_, window, cx| {
+                window.dispatch_action(action, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+        let selected = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                viewer
+                    .read(cx)
+                    .tree
+                    .state
+                    .read(cx)
+                    .selected_item()
+                    .map(|item| (item.label.to_string(), item.is_expanded()))
+            })
+        };
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            window.click(file_id(4), cx);
+        })
+        .unwrap();
+        select(Box::new(SelectLeft), cx);
+        assert_eq!(selected(cx), Some(("guides".into(), true)));
+        select(Box::new(SelectLeft), cx);
+        assert_eq!(selected(cx), Some(("guides".into(), false)));
+        select(Box::new(SelectLeft), cx);
+        assert_eq!(selected(cx), Some(("docs".into(), true)));
+        select(Box::new(SelectRight), cx);
+        assert_eq!(selected(cx), Some(("guides".into(), false)));
+        select(Box::new(SelectRight), cx);
+        assert_eq!(selected(cx), Some(("guides".into(), true)));
+        select(Box::new(SelectRight), cx);
+        assert_eq!(selected(cx).unwrap().0, "setup.md");
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(4));
+        select(Box::new(SelectRight), cx);
+        assert_eq!(selected(cx).unwrap().0, "index.md");
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(5));
+        select(Box::new(SelectRight), cx);
+        assert_eq!(selected(cx).unwrap().0, "README.md");
+        select(Box::new(SelectRight), cx);
+        assert_eq!(selected(cx).unwrap().0, "README.md");
+        select(Box::new(gpui_kit::base::actions::SelectUp), cx);
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(5));
+        select(Box::new(gpui_kit::base::actions::SelectUp), cx);
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(4));
+        select(Box::new(gpui_kit::base::actions::SelectDown), cx);
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(5));
+    }
+
+    #[gpui_kit::test]
+    fn move_annotation_remains_visible_without_line_stats(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut changes = changes();
+        changes[3].path = ".agents/project-state.md".into();
+        changes[3].previous_path = Some(".codex/project-state.md".into());
+        changes[3].status = 'R';
+        let mut stats = stats();
+        stats[3] = Some(DiffStats::default());
+        let (handle, viewer) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+                cx.new(|cx| Viewer {
+                    tree: ChangeTree::new(
+                        &changes,
+                        &stats,
+                        Path::new("repository"),
+                        cx,
+                        |viewer: &mut Viewer, index, _| viewer.opened.set(Some(index)),
+                    ),
                     show_stats: false,
                     opened: Rc::new(Cell::new(None)),
                 })
@@ -572,31 +825,75 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             window.render_frame(cx);
-            let folder = viewer
-                .read(cx)
-                .tree
-                .nodes
-                .iter()
-                .find(|(_, node)| {
-                    node.file_index.is_none()
-                        && Path::new(node.path.as_str()) == Path::new("crates/model/src/specs")
+            assert_eq!(window.find_all("tree-move-source").len(), 1);
+            let label = tr("moved_from").replace("{path}", "../.codex/");
+            assert_eq!(
+                window.within(file_id(3)).find("tree-move-source").label(),
+                Some(label.as_str()),
+            );
+            assert!(window.find_all("file-diff-stats").is_empty());
+            window.click(file_id(3), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(3));
+    }
+
+    #[gpui_kit::test]
+    fn folder_clicks_fold_and_leaf_clicks_open_the_original_file(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (handle, viewer) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+                cx.new(|cx| Viewer {
+                    tree: ChangeTree::new(
+                        &changes(),
+                        &stats(),
+                        Path::new("repository"),
+                        cx,
+                        |viewer: &mut Viewer, index, _| viewer.opened.set(Some(index)),
+                    ),
+                    show_stats: false,
+                    opened: Rc::new(Cell::new(None)),
                 })
-                .unwrap()
-                .0
-                .clone();
-            assert!(window.try_find(file_id(1)).is_some());
-            window.click(folder.clone(), cx);
-            assert!(window.try_find(file_id(1)).is_none());
-            assert_eq!(viewer.read(cx).opened.get(), None);
-            window.click(folder.clone(), cx);
-            window.click(file_id(2), cx);
-            assert_eq!(viewer.read(cx).opened.get(), Some(2));
+            })
+            .unwrap()
+        });
+        let folder = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_frame(cx);
+                let folder = viewer
+                    .read(cx)
+                    .tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.file_index.is_none()
+                            && Path::new(node.path.as_str()) == Path::new("crates/model/src/specs")
+                    })
+                    .unwrap()
+                    .0
+                    .clone();
+                assert!(window.try_find(file_id(1)).is_some());
+                window.click(folder.clone(), cx);
+                assert!(window.try_find(file_id(1)).is_none());
+                assert_eq!(viewer.read(cx).opened.get(), None);
+                window.click(folder.clone(), cx);
+                window.click(file_id(2), cx);
+                folder
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(2));
+        cx.update_window(handle, |_, window, cx| {
             window.click(folder, cx);
             viewer.update(cx, |viewer, cx| viewer.tree.reveal_file(1, cx));
             window.render_frame(cx);
             assert!(window.try_find(file_id(1)).is_some());
         })
         .unwrap();
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(1));
     }
 
     #[gpui_kit::test]
@@ -605,7 +902,13 @@ mod tests {
         let (handle, viewer) = cx.update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
                 cx.new(|cx| Viewer {
-                    tree: ChangeTree::new(&changes(), &stats(), Path::new("repository"), cx),
+                    tree: ChangeTree::new(
+                        &changes(),
+                        &stats(),
+                        Path::new("repository"),
+                        cx,
+                        |viewer: &mut Viewer, index, _| viewer.opened.set(Some(index)),
+                    ),
                     show_stats: false,
                     opened: Rc::new(Cell::new(None)),
                 })
@@ -678,8 +981,9 @@ mod tests {
             viewer.update(cx, |viewer, cx| viewer.tree.toggle_directories(cx));
             window.render_frame(cx);
             window.click(file_id(2), cx);
-            assert_eq!(viewer.read(cx).opened.get(), Some(2));
         })
         .unwrap();
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| viewer.read(cx).opened.get()), Some(2));
     }
 }

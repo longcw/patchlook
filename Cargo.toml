@@ -22,7 +22,8 @@ gpui-kit = { version = "=0.8.0", features = ["test-support"] }
 tempfile = "3"
 
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
+split-debuginfo = "packed"
 
 [profile.release]
 lto = "thin"

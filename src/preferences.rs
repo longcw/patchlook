@@ -17,6 +17,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_preferences_keep_defaults_and_round_trip_through_disk() {
+        let previous: Preferences =
+            serde_json::from_str(r#"{"appearance":"system","layout":"split","repository":null}"#)
+                .unwrap();
+        for preferences in [Preferences::default(), previous] {
+            assert!(!preferences.tree_file_list);
+            assert!(!preferences.show_file_stats);
+            assert!(preferences.soft_wrap);
+            assert!(preferences.show_commit_message);
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preferences.json");
+        let mut preferences = Preferences {
+            tree_file_list: true,
+            show_file_stats: true,
+            soft_wrap: false,
+            show_commit_message: false,
+            language: Language::German,
+            ..Preferences::default()
+        };
+        preferences.remember_repository(PathBuf::from("repository"));
+        preferences.write_to(&path).unwrap();
+        let restored: Preferences = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert!(restored.tree_file_list);
+        assert!(restored.show_file_stats);
+        assert!(!restored.soft_wrap);
+        assert!(!restored.show_commit_message);
+        assert_eq!(restored.language, Language::German);
+        assert_eq!(restored.repository, preferences.repository);
+    }
+
+    #[test]
     fn system_language_uses_preference_order_regions_and_chinese_scripts() {
         for (locale, expected) in [
             ("en-GB", Language::English),
@@ -67,6 +100,20 @@ mod tests {
     }
 
     #[test]
+    fn repository_sidebar_ratio_round_trips_without_affecting_repository_choice() {
+        assert_eq!(Preferences::default().repository_sidebar_ratio, None);
+        let preferences = Preferences {
+            repository_sidebar_ratio: Some(0.35),
+            repository: Some(PathBuf::from("repository")),
+            ..Preferences::default()
+        };
+        let restored: Preferences =
+            serde_json::from_slice(&serde_json::to_vec(&preferences).unwrap()).unwrap();
+        assert_eq!(restored.repository_sidebar_ratio, Some(0.35));
+        assert_eq!(restored.repository, preferences.repository);
+    }
+
+    #[test]
     fn recent_repositories_deduplicate_and_keep_independent_viewed_branches() {
         let mut preferences = Preferences::default();
         let first = PathBuf::from("first");
@@ -79,6 +126,10 @@ mod tests {
         assert_eq!(preferences.recent_repositories.len(), 2);
         assert_eq!(preferences.recent_repositories[0].path, first);
         assert_eq!(preferences.repository.as_ref(), Some(&first));
+        preferences.remember_repository(second.clone());
+        assert_eq!(preferences.recent_repositories[0].path, first);
+        assert_eq!(preferences.recent_repositories[1].path, second);
+        assert_eq!(preferences.repository.as_ref(), Some(&second));
         let restored: Preferences =
             serde_json::from_slice(&serde_json::to_vec(&preferences).unwrap()).unwrap();
         assert_eq!(restored.viewed_branch(&first), Some("refs/heads/feature"));
@@ -91,6 +142,29 @@ mod tests {
         assert_eq!(
             preferences.viewed_branch(&second),
             Some("refs/remotes/origin/main")
+        );
+    }
+
+    #[test]
+    fn repository_names_sort_case_insensitively_with_paths_breaking_ties() {
+        let mut preferences = Preferences::default();
+        for path in ["z/Zebra", "b/alpha", "a/Alpha", "c/Beta"] {
+            preferences.remember_repository(path.into());
+        }
+        assert_eq!(
+            preferences
+                .recent_repositories
+                .iter()
+                .map(|repo| repo.path.clone())
+                .collect::<Vec<_>>(),
+            ["a/Alpha", "b/alpha", "c/Beta", "z/Zebra"]
+                .map(PathBuf::from)
+                .to_vec(),
+        );
+        preferences.remember_repository("z/Zebra".into());
+        assert_eq!(
+            preferences.recent_repositories[0].path,
+            PathBuf::from("a/Alpha")
         );
     }
 }
@@ -205,7 +279,7 @@ impl Language {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Preferences {
     pub appearance: Appearance,
     pub layout: Layout,
@@ -214,6 +288,37 @@ pub struct Preferences {
     pub repository: Option<PathBuf>,
     #[serde(default)]
     pub recent_repositories: Vec<RecentRepository>,
+    #[serde(default)]
+    pub repository_sidebar_ratio: Option<f32>,
+    #[serde(default)]
+    pub tree_file_list: bool,
+    #[serde(default)]
+    pub show_file_stats: bool,
+    #[serde(default = "default_enabled")]
+    pub soft_wrap: bool,
+    #[serde(default = "default_enabled")]
+    pub show_commit_message: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            layout: Layout::default(),
+            language: Language::default(),
+            repository: None,
+            recent_repositories: Vec::new(),
+            repository_sidebar_ratio: None,
+            tree_file_list: false,
+            show_file_stats: false,
+            soft_wrap: default_enabled(),
+            show_commit_message: default_enabled(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -224,17 +329,32 @@ pub struct RecentRepository {
 
 impl Preferences {
     pub fn remember_repository(&mut self, path: PathBuf) {
-        let entry = self
+        if !self
             .recent_repositories
             .iter()
-            .position(|entry| entry.path == path)
-            .map(|index| self.recent_repositories.remove(index))
-            .unwrap_or_else(|| RecentRepository {
+            .any(|entry| entry.path == path)
+        {
+            self.recent_repositories.push(RecentRepository {
                 path: path.clone(),
                 viewed_branch: None,
             });
-        self.recent_repositories.insert(0, entry);
+        }
+        self.sort_repositories();
         self.repository = Some(path);
+    }
+
+    fn sort_repositories(&mut self) {
+        self.recent_repositories.sort_by_cached_key(|entry| {
+            (
+                entry
+                    .path
+                    .file_name()
+                    .unwrap_or(entry.path.as_os_str())
+                    .to_string_lossy()
+                    .to_lowercase(),
+                entry.path.clone(),
+            )
+        });
     }
 
     pub fn viewed_branch(&self, path: &std::path::Path) -> Option<&str> {
@@ -264,18 +384,25 @@ impl Preferences {
     pub fn read() -> Result<Self> {
         let file = Self::file()?;
         match fs::read(&file) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("Invalid settings: {}", file.display())),
+            Ok(bytes) => {
+                let mut preferences: Self = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("Invalid settings: {}", file.display()))?;
+                preferences.sort_repositories();
+                Ok(preferences)
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error).with_context(|| format!("Cannot read {}", file.display())),
         }
     }
 
     pub fn write(&self) -> Result<()> {
-        let file = Self::file()?;
+        self.write_to(&Self::file()?)
+    }
+
+    pub fn write_to(&self, file: &std::path::Path) -> Result<()> {
         fs::create_dir_all(file.parent().context("Invalid settings directory")?)?;
         let temporary = file.with_extension("json.tmp");
         fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
-        fs::rename(&temporary, &file).context("Cannot save application settings")
+        fs::rename(&temporary, file).context("Cannot save application settings")
     }
 }
