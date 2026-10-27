@@ -1,12 +1,12 @@
 # Project State
 
 ## Purpose and Boundaries
-- Patchlook 是 Rust / GPUI / GPUI Kit 实现的本地 Git 桌面查看器，目标平台为 macOS、Windows、Linux；不依赖后台服务或浏览器插件。
+- Patchlook 是 Rust / GPUI / GPUI Kit 实现的本地 Git 桌面查看器，目标平台为 macOS、Windows、Linux；采用 MIT 协议，不依赖后台服务或浏览器插件。
 - 产品当前只读：查看工作区、暂存区、分支和提交，不执行暂存、提交、checkout、fetch、pull 或 push；分支浏览使用本地已有引用，“改动”页始终对应实际工作区，外部改动通过手动刷新重新读取。
 - 文本 diff 要求 UTF-8；支持的图片独立预览，其他二进制文件只展示变化信息。运行环境需要 PATH 中可用的 Git，构建与平台依赖见 `docs/development.md`。
 
 ## Current Architecture
-- 显示名称为 `Patchlook`，Cargo package 与可执行程序名为 `patchlook`，应用标识为 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键，`src/lib.rs` 导出 Git 与设置模块。
+- 显示名称为 `Patchlook`，Cargo package 与可执行程序名为 `patchlook`，应用标识为 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键，`src/lib.rs` 导出 Git 与设置模块；`src/about.rs` 的窗口级 AboutPanel 复用 Kit Base Dialog 和 Presence，在应用内居中展示关于页／协议正文；淡出结束才卸载遮罩并恢复焦点，遵循系统减少动态效果设置，版本／仓库／协议标识取 Cargo 构建元数据。
 - `src/git.rs` 的 `Repository` 封装 Git CLI，直接传递参数、不经过 shell；通过 NUL 分隔结果保留特殊路径，并关闭可选锁、外部 diff 和 textconv 等相关行为。
 - `src/app.rs` 的 `Patchlook` 管理共享仓库信息与页面展示；`ChangeState` 分别持有工作区和历史文件的列表、选择、滚动、树、diff、错误及任务，`HistoryState` 管理 Repos／History 共用的提交、搜索与分页。只保留当前仓库的两组状态；已加载 Tab 切换不读 Git，历史预览按需加载一次，隐藏页的异步结果仍写回所属状态。切仓库或手动刷新成功后替换当前页并使另一组状态失效；浏览分支只重载历史。新列表及首个 diff 在后台准备并一次替换，失败保留旧内容。
 - 文本 patch 包含完整上下文，由 Kit 的 `DiffFile` / `DiffState` 解析和渲染；布局、上下文折叠、代码选择和虚拟滚动依赖 Kit。图片经 `Repository::file_versions` 读取相同基准的字节，由 `src/image_diff.rs` 解码、缩放和渲染。
@@ -33,6 +33,8 @@
 - PNG、JPEG、WebP、GIF、BMP、TIFF、ICO、SVG 前后版本预览，支持尺寸／大小信息、透明棋盘格、等比例适应窗口、1:1、缩放与面板内滚动。
 - 亮／暗／跟随系统外观、九种界面语言及跟随系统语言；文件列表模式、行数显示、自动换行和提交说明开关统一由 Preferences 保存，交互时落盘、启动时恢复。其他分栏尺寸、窗口位置大小、当前 Tab、选中项、滚动位置与搜索不持久化。可拖动侧栏、固定文件工具栏和虚拟滚动列表。
 
+- 关于页由顶部信息按钮或应用菜单打开，包含内嵌 logo、版本、九语言简介、MIT 协议、GitHub 与问题反馈链接；弹窗按内容实际高度垂直居中，关闭按钮／Esc／遮罩关闭均淡出；协议正文在同一弹窗内离线阅读与复制，根 LICENSE 与文件图标许可随三平台安装包分发。
+
 ### In Progress
 - [paused] 提交说明局部高亮与实时拖选：按用户决定不修改 Kit Base 层，等待上游支持／修复后再评估升级。当前 `SelectableText` 缺少局部高亮 API，拖选状态变化未订阅窗口刷新；详情文字高亮尚未实现，拖选期间选区不重绘的问题保留。已有列表标题匹配高亮独立完成。
 
@@ -49,7 +51,7 @@
 - 2026-10-26，v0.1.0（`c51e0c8`）的 GitHub 运行 `40340977301` attempt 2 全部通过：三平台格式检查、Clippy、Rust 测试、4 项 Python 发布失败路径测试、Release 构建和打包。Windows 两处测试的目录路径比较已修正并通过 CI。
 - macOS Developer ID 签名、公证、DMG／应用票据附加与校验、Gatekeeper 评估均通过。首次提交曾超过 CI 的 1800 秒等待上限，随后由只读查询运行 `40350428057` 确认 Accepted；不是 Apple 拒绝应用。
 - v0.1.0 Release 草稿已生成并核对附件：macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz；尚未公开发布。手动公证查询已验证只查询既有提交，跳过构建和发布。
-- 2026-10-28，格式、Clippy、43 项 Rust 测试及 Release 构建通过（此前 4 项 Python 打包测试通过）；覆盖 Git／搜索、选择防抖、切换提交期间保留旧内容、已加载 Tab 无 Git 读取仍可切换、隐藏页异步结果归属、分支切换保留工作区、空搜索复用、提交说明开关不重载 diff、四项展示偏好默认值／落盘恢复、读取失败保留快照、预览错误不丢列表、Esc 失焦及分栏序列化／全新窗口恢复。macOS Release 已实测默认等分、两种列表类型图标与根目录路径，并核对跨 Tab 保留工作区文件、Repos／History 共用同一历史提交与 diff、放大的平铺图标；原生拖动工具报 `noWindowsAvailable`，未完成真实拖动后重启验收。此前历史分页、复制和高亮已实测。界面测试使用临时仓库与独立临时配置目录，已核对真实偏好文件不受测试影响；Release 重启已验证目录列表、行数显示、自动换行及隐藏提交说明恢复。未量化帧耗时；Windows／Linux 未另做实机验收，Linux 包仍依赖构建系统动态库。
+- 2026-10-28，格式、Clippy、45 项 Rust 测试、4 项 Python 打包测试及 Release 构建通过；覆盖 Git／搜索、选择防抖、切换提交期间保留旧内容、已加载 Tab 无 Git 读取仍可切换、隐藏页异步结果归属、分支切换保留工作区、空搜索复用、提交说明开关不重载 diff、四项展示偏好默认值／落盘恢复、关于页入口／链接、居中与三种关闭方式的动画生命周期及焦点恢复、读取失败保留快照、预览错误不丢列表、Esc 失焦及分栏序列化／全新窗口恢复。macOS Release 已实测默认等分、两种列表类型图标与根目录路径，并核对跨 Tab 保留工作区文件、Repos／History 共用同一历史提交与 diff、放大的平铺图标；原生拖动工具报 `noWindowsAvailable`，未完成真实拖动后重启验收。此前历史分页、复制和高亮已实测。界面测试使用临时仓库与独立临时配置目录，已核对真实偏好文件不受测试影响；Release 重启已验证目录列表、行数显示、自动换行及隐藏提交说明恢复；关于页 logo、版本、居中布局、协议阅读及关闭已在 Release 预览核对。未量化帧耗时；Windows／Linux 未另做实机验收，Linux 包仍依赖构建系统动态库。
 - 2026-10-27 按新缓存配置清理并重建 Debug，格式检查、Clippy 和 32 项 Rust 测试通过；本机 `target` 从 14.45 GiB 降至 5.74 GiB，增量缓存 176.7 MiB。重复测试编译与 Release 构建均直接复用产物，Release 二进制校验和不变。Windows／Linux 未验证本次构建缓存配置。
 
 ## Source Pointers
@@ -58,6 +60,7 @@
 - `Cargo.toml`、`Cargo.lock` — Rust 版本要求、依赖来源和实际锁定版本。
 - `src/git.rs` — 只读仓库接口、diff 基准、路径解析、行数统计与真实 Git 仓库测试。
 - `src/app.rs` — 桌面状态、后台加载、页面与文件切换、界面回归。
+- `src/about.rs`、`LICENSE` — 关于页、构建元数据展示与离线 MIT 协议正文。
 - `src/change_tree.rs`、`src/image_diff.rs`、`src/file_icons.rs` — 目录树、图片预览、文件类型图标与资源的实现及测试。
 - `src/preferences.rs`、`src/strings.rs`、`locales/`、`themes/` — 持久化、语言与共享外观。
 - `tests/diff_layout.rs`、`tests/scroll_bounce.rs` — Kit 补丁的消费方布局、上下文与滚动回归。

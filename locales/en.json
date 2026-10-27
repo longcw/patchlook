@@ -88,5 +88,11 @@
   "binary_file": "Binary",
   "language": "Interface language",
   "language_name": "English",
-  "language_short": "EN"
+  "language_short": "EN",
+  "about": "About Patchlook",
+  "about_version": "Version {version}",
+  "about_description": "A native, read-only Git viewer. Review local changes, explore commit history, and compare code and images.",
+  "report_issue": "Report an issue",
+  "about_built_with": "Built with Rust and GPUI Kit",
+  "open_source_license": "Open-source license"
 }

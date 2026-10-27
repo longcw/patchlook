@@ -88,5 +88,11 @@
   "binary_file": "Binaire",
   "language": "Langue de l’interface",
   "language_name": "Français",
-  "language_short": "FR"
+  "language_short": "FR",
+  "about": "À propos de Patchlook",
+  "about_version": "Version {version}",
+  "about_description": "Un outil Git natif en lecture seule. Consultez les modifications locales, explorez l’historique des commits et comparez le code et les images.",
+  "report_issue": "Signaler un problème",
+  "about_built_with": "Développé avec Rust et GPUI Kit",
+  "open_source_license": "Licence open source"
 }

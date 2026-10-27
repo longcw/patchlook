@@ -105,6 +105,7 @@ def main() -> None:
         (contents / "Resources").mkdir(exist_ok=True)
         shutil.copy2(binary, contents / "MacOS" / package_name)
         shutil.copy2(icon_license, contents / "Resources" / icon_license_name)
+        shutil.copy2(root / "LICENSE", contents / "Resources" / "LICENSE")
         icon = contents / "Resources" / "AppIcon.icns"
         create_macos_icon(root / "assets" / "app-icon" / "patchlook-v2.png", icon)
         info = {
@@ -150,12 +151,14 @@ def main() -> None:
             out.write(binary, name)
             out.write(root / "README.md", "README.md")
             out.write(icon_license, icon_license_name)
+            out.write(root / "LICENSE", "LICENSE")
     else:
         archive = dist / f"{artifact}.tar.gz"
         with tarfile.open(archive, "w:gz") as out:
             out.add(binary, arcname=name)
             out.add(root / "README.md", arcname="README.md")
             out.add(icon_license, arcname=icon_license_name)
+            out.add(root / "LICENSE", arcname="LICENSE")
     print(archive)
 
 

@@ -31,7 +31,7 @@ const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 const HISTORY_SEARCH_THRESHOLD: usize = 20;
 
-gpui_kit::actions!(patchlook, [OpenRepository, Refresh, Quit]);
+gpui_kit::actions!(patchlook, [About, OpenRepository, Refresh, Quit]);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -196,6 +196,7 @@ enum HistoryRequest {
 
 pub struct Patchlook {
     preferences: Preferences,
+    about: Entity<crate::about::AboutPanel>,
     #[cfg(test)]
     preferences_directory: tempfile::TempDir,
     repository: Option<Repository>,
@@ -256,6 +257,7 @@ impl Patchlook {
             working: ChangeState::new(preferences.layout, cx),
             history: HistoryState::new(preferences.layout, cx),
             preferences,
+            about: cx.new(crate::about::AboutPanel::new),
             #[cfg(test)]
             preferences_directory: tempfile::tempdir().unwrap(),
             repository: None,
@@ -282,6 +284,10 @@ impl Patchlook {
             app.load(path, cx);
         }
         app
+    }
+
+    fn show_about(&mut self, _: &About, window: &mut Window, cx: &mut Context<Self>) {
+        self.about.update(cx, |about, cx| about.show(window, cx));
     }
 
     fn save_preferences(&mut self) {
@@ -1137,6 +1143,9 @@ impl Patchlook {
                         ),
                 )
                 .child(div().flex_1())
+                .child(icon_button("about", IconName::Info, "about").on_click(
+                    cx.listener(|this, _, window, cx| this.show_about(&About, window, cx)),
+                ))
                 .child(self.language_menu(cx))
                 .child({
                     let (icon, current) = appearance_label(self.preferences.appearance);
@@ -2343,6 +2352,7 @@ impl Render for Patchlook {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::refresh))
+            .on_action(cx.listener(Self::show_about))
             .child(self.toolbar(cx))
             .when_some(self.visible_error().cloned(), |view, error| {
                 view.child(
@@ -2376,6 +2386,7 @@ impl Render for Patchlook {
                     .overflow_hidden()
                     .child(body),
             )
+            .child(self.about.clone())
     }
 }
 
@@ -2461,6 +2472,7 @@ mod tests {
             working: ChangeState::new(Layout::Split, cx),
             history: HistoryState::new(Layout::Split, cx),
             preferences: Preferences::default(),
+            about: cx.new(crate::about::AboutPanel::new),
             preferences_directory: tempfile::tempdir().unwrap(),
             repository: None,
             branch: "main".into(),
@@ -2480,6 +2492,147 @@ mod tests {
             load_task: None,
             _subscriptions: vec![],
             focus: cx.focus_handle(),
+        }
+    }
+
+    #[gpui_kit::test]
+    fn about_links_and_license_dialog_work_without_a_repository(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.focus(&app.read(cx).focus.clone(), cx);
+            window.render_frame(cx);
+            window.dispatch_action(Box::new(About), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(window.find("about-content").visible());
+            window.click("about-github", cx);
+        })
+        .unwrap();
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some(env!("CARGO_PKG_REPOSITORY"))
+        );
+        cx.update_window(handle, |_, window, cx| window.click("about-issues", cx))
+            .unwrap();
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some(concat!(env!("CARGO_PKG_REPOSITORY"), "/issues"))
+        );
+        cx.update_window(handle, |_, window, cx| window.click("about-license", cx))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(window.find("app-license-text").visible());
+            window.press("escape", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("about-surface").visible());
+            assert!(window.try_find("app-license-text").is_none());
+            assert!(window.find("about-content").visible());
+            window.press("escape", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("about-surface").is_none());
+            assert_eq!(window.focused(cx), Some(app.read(cx).focus.clone()));
+            window.render_frame(cx);
+            window.click("about", cx);
+            window.render_frame(cx);
+            assert!(window.find("about-surface").visible());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn about_is_centered_and_keeps_focus_until_each_dismissal_finishes(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        let (enter, exit) = cx.update(|cx| {
+            let motion = cx.theme().motion_tokens();
+            (motion.duration_normal, motion.duration_fast)
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.focus(&app.read(cx).focus.clone(), cx);
+            window.render_frame(cx);
+            assert!(window.try_find("about-surface").is_none());
+        })
+        .unwrap();
+        for dismissal in ["button", "escape", "backdrop"] {
+            cx.update_window(handle, |_, window, cx| {
+                window.click("about", cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.executor().advance_clock(enter);
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("about-surface").bounds();
+                let viewport = window.viewport_size();
+                assert!((bounds.center().y - viewport.height / 2.).abs() < px(1.));
+                match dismissal {
+                    "button" => window.click("about-close", cx),
+                    "escape" => window.press("escape", cx),
+                    _ => {
+                        window.dispatch_event(
+                            MouseDownEvent {
+                                position: point(px(1.), px(1.)),
+                                button: MouseButton::Left,
+                                click_count: 1,
+                                modifiers: Modifiers::default(),
+                                first_mouse: false,
+                            }
+                            .to_platform_input(),
+                            cx,
+                        );
+                    }
+                }
+                window.render_frame(cx);
+                assert!(window.find("about-surface").visible());
+                assert_ne!(window.focused(cx), Some(app.read(cx).focus.clone()));
+            })
+            .unwrap();
+            cx.executor().advance_clock(exit / 2);
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.find("about-surface").visible());
+            })
+            .unwrap();
+            cx.executor().advance_clock(exit);
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("about-surface").is_none());
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| {
+                assert_eq!(window.focused(cx), Some(app.read(cx).focus.clone()));
+            })
+            .unwrap();
         }
     }
 

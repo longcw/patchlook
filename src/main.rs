@@ -1,10 +1,11 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod about;
 mod app;
 mod change_tree;
 mod file_icons;
 mod image_diff;
 mod strings;
-use app::{OpenRepository, Patchlook, Quit, Refresh};
+use app::{About, OpenRepository, Patchlook, Quit, Refresh};
 use gpui_kit::*;
 use strings::tr;
 
@@ -71,7 +72,11 @@ fn update_menus(cx: &mut App) {
         Menu {
             disabled: false,
             name: tr("app_name").into(),
-            items: vec![MenuItem::action(tr("quit"), Quit)],
+            items: vec![
+                MenuItem::action(tr("about"), About),
+                MenuItem::separator(),
+                MenuItem::action(tr("quit"), Quit),
+            ],
         },
         Menu {
             disabled: false,

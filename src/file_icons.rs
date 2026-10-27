@@ -1,6 +1,8 @@
 use gpui_kit::{AssetSource, SharedString, assets::AllAssets, *};
 use std::{borrow::Cow, path::Path};
 
+pub const APP_ICON: &str = "app-icon/patchlook-v2.png";
+
 const ICONS: &[(&str, &[u8])] = &[
     (
         "file-icons/rust.svg",
@@ -147,6 +149,11 @@ const ICONS: &[(&str, &[u8])] = &[
 pub struct AppAssets;
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == APP_ICON {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/app-icon/patchlook-v2.png"
+            ))));
+        }
         if let Some((_, bytes)) = ICONS.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
@@ -154,6 +161,9 @@ impl AssetSource for AppAssets {
     }
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = AllAssets.list(path)?;
+        if APP_ICON.starts_with(path) {
+            paths.push(APP_ICON.into());
+        }
         paths.extend(
             ICONS
                 .iter()

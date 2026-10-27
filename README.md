@@ -69,3 +69,5 @@ cargo run --locked --release
 See the [development guide](https://github.com/worldtheater/patchlook/blob/main/docs/development.md) for testing, packaging, releases, and GPUI Kit patches.
 
 Built with [Rust](https://www.rust-lang.org/) and [GPUI Kit](https://github.com/longbridge/gpui-kit).
+
+Licensed under the [MIT License](LICENSE).

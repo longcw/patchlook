@@ -88,5 +88,11 @@
   "binary_file": "바이너리",
   "language": "인터페이스 언어",
   "language_name": "한국어",
-  "language_short": "한"
+  "language_short": "한",
+  "about": "Patchlook 정보",
+  "about_version": "버전 {version}",
+  "about_description": "네이티브 읽기 전용 Git 뷰어입니다. 로컬 변경 사항과 커밋 기록을 살펴보고 코드와 이미지를 비교하세요.",
+  "report_issue": "문제 보고",
+  "about_built_with": "Rust와 GPUI Kit로 제작",
+  "open_source_license": "오픈 소스 라이선스"
 }
