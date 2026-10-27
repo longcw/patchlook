@@ -36,7 +36,6 @@
 - 关于页由顶部信息按钮或应用菜单打开，包含内嵌 logo、版本、九语言简介、MIT 协议、GitHub 与问题反馈链接；弹窗按内容实际高度垂直居中，关闭按钮／Esc／遮罩关闭均淡出；协议正文在同一弹窗内离线阅读与复制，根 LICENSE 与文件图标许可随三平台安装包分发。
 
 ### In Progress
-- [active] 准备 v0.1.1 安装包，包含当前界面、状态缓存、偏好和关于页改进；Cargo 版本已更新。下一步推送 main 与版本标签，通过现有三平台流程构建并验证 macOS 签名、公证及 Release 草稿附件。
 - [paused] 提交说明局部高亮与实时拖选：按用户决定不修改 Kit Base 层，等待上游支持／修复后再评估升级。当前 `SelectableText` 缺少局部高亮 API，拖选状态变化未订阅窗口刷新；详情文字高亮尚未实现，拖选期间选区不重绘的问题保留。已有列表标题匹配高亮独立完成。
 
 ### Next
@@ -49,11 +48,10 @@
 暂无待确认的决策记录。
 
 ## Verification
-- 2026-10-26，v0.1.0（`c51e0c8`）的 GitHub 运行 `40340977301` attempt 2 全部通过：三平台格式检查、Clippy、Rust 测试、4 项 Python 发布失败路径测试、Release 构建和打包。Windows 两处测试的目录路径比较已修正并通过 CI。
-- macOS Developer ID 签名、公证、DMG／应用票据附加与校验、Gatekeeper 评估均通过。首次提交曾超过 CI 的 1800 秒等待上限，随后由只读查询运行 `40350428057` 确认 Accepted；不是 Apple 拒绝应用。
-- v0.1.0 Release 草稿已生成并核对附件：macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz；尚未公开发布。手动公证查询已验证只查询既有提交，跳过构建和发布。
+- 2026-10-28，v0.1.1（`03499e8`）的 GitHub 运行 `40555348269` 全部通过：三平台格式、Clippy、46 项 Rust 测试、4 项 Python 打包测试、Release 构建与打包；main 和 v0.1.1 标签已推送。Release 草稿已生成，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz，尚未公开发布。
+- v0.1.1 macOS Developer ID 签名、Apple 公证、DMG／应用票据校验与 Gatekeeper 评估通过；公证提交 `316da02e-c4be-4e0e-9903-3cc1dbe4cc4a` 返回 Accepted。CI 正式包已下载至 `dist/`，外层归档 SHA256 与 GitHub 摘要一致，本地再次验证应用版本、许可证、签名、公证票据与 Gatekeeper 均通过。
 - 2026-10-28，格式、Clippy、46 项 Rust 测试、4 项 Python 打包测试及 Release 构建通过；覆盖 Git／搜索、选择防抖、Repos 目录树进入详情不显示旧文本／图片及待加载选择的重复进入、切换提交期间保留旧内容、已加载 Tab 无 Git 读取仍可切换、隐藏页异步结果归属、分支切换保留工作区、空搜索复用、提交说明开关不重载 diff、四项展示偏好默认值／落盘恢复、关于页入口／链接、居中与三种关闭方式的动画生命周期及焦点恢复、读取失败保留快照、预览错误不丢列表、Esc 失焦及分栏序列化／全新窗口恢复。macOS Release 已实测默认等分、两种列表类型图标与根目录路径，并核对跨 Tab 保留工作区文件、Repos／History 共用同一历史提交与 diff、放大的平铺图标；原生拖动工具报 `noWindowsAvailable`，未完成真实拖动后重启验收。此前历史分页、复制和高亮已实测。界面测试使用临时仓库与独立临时配置目录，已核对真实偏好文件不受测试影响；Release 重启已验证目录列表、行数显示、自动换行及隐藏提交说明恢复；关于页 logo、版本、居中布局、协议阅读及关闭已在 Release 预览核对。未量化帧耗时；Windows／Linux 未另做实机验收，Linux 包仍依赖构建系统动态库。
-- 2026-10-27 按新缓存配置清理并重建 Debug，格式检查、Clippy 和 32 项 Rust 测试通过；本机 `target` 从 14.45 GiB 降至 5.74 GiB，增量缓存 176.7 MiB。重复测试编译与 Release 构建均直接复用产物，Release 二进制校验和不变。Windows／Linux 未验证本次构建缓存配置。
+- 2026-10-27 按新缓存配置清理并重建 Debug，格式检查、Clippy 和 32 项 Rust 测试通过；本机 `target` 从 14.45 GiB 降至 5.74 GiB，增量缓存 176.7 MiB。重复测试编译与 Release 构建均直接复用产物，Release 二进制校验和不变。本机缓存容量为当时测量值；Windows／Linux 未做同类磁盘占用测量。
 
 ## Source Pointers
 - `README.md` — 默认英文产品首页，包含产品标志、功能、安装、使用和快速构建入口。
