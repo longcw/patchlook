@@ -35,7 +35,6 @@
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
-- [active] 发布 v0.1.2：包含 `d99a560` 的外部程序菜单与界面调整；推送匹配版本标签，等待云端签名、公证和打包，验证 macOS 产物后公开 GitHub Release。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -48,8 +47,8 @@
 暂无待确认的决策。
 
 ## Verification
-- v0.1.1（`03499e8`）云端运行 `40555348269` 三平台检查、46 项 Rust 测试、4 项打包测试、Release 构建及打包通过。macOS Developer ID 签名、公证、票据和 Gatekeeper 通过；正式包下载到 `dist/` 后核对摘要和签名。Release 草稿已生成，尚未公开。
-- 2026-10-28 功能提交 `d99a560` 的云端运行 `40579248576` 三平台检查、测试、Release 构建和开发打包通过（macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试）。本地格式、Clippy、51 项 Rust 测试及 Release 构建也通过。覆盖外部打开的最新工作区／删除前版本、缺失文件报错、程序选择与加载禁用、macOS 推荐图标，以及仓库移除的选择／落盘／磁盘保留；已有 Git、历史搜索、页面状态、预览切换、偏好与 About 回归仍通过。
+- v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
+- macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
 - macOS Release 实测类型图标、紧凑列表、Tab 复用、历史搜索、复制反馈、偏好重启恢复、About 居中和动画；外部打开已验证暂存项打开工作区最新内容、删除项通过“其他程序…”打开临时副本，应用图标与键盘菜单正常。原生拖动工具曾报 `noWindowsAvailable`，真实拖动后重启仍未验收；未量化帧耗时。
 - Windows／Linux 已通过云端原生检查、测试、链接与打包，未做实机交互；CI／开发文档包含 GLib 开发依赖，Linux 安装包仍依赖构建系统动态库。
 - 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
