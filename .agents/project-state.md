@@ -5,7 +5,7 @@
 - 文本 diff 要求 UTF-8；支持的图片独立预览，其他二进制只展示变化信息。运行需要 PATH 中可用的 Git。
 
 ## Current Architecture
-- Cargo 包／二进制为 `patchlook`，应用标识 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键。
+- Cargo 包／二进制为 `patchlook`，应用标识 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键。`build.rs` 将多尺寸 ICO 以 GPUI 需要的资源 ID 1 嵌入 Windows EXE，资源编译失败会中止构建。
 - `src/git.rs` 封装 Git CLI，参数不经过 shell；NUL 分隔保留特殊路径，关闭可选锁、外部 diff 和 textconv；全文件上下文使用 `i32::MAX / 2` 并固定 inter-hunk context 为 0，避免旧版 Windows Git 的 32 位整数溢出和重叠 hunk。
 - `src/app.rs` 管理共享仓库与页面。`ChangeState` 分别持有工作区／历史的列表、选择、树、滚动、diff、错误与任务；`HistoryState` 管理 Repos／History 共用的提交、搜索和分页。只缓存当前仓库，隐藏页结果写回所属状态；已加载 Tab 切换不读 Git。切仓库／刷新成功后替换当前页并使另一组状态失效，浏览分支只重载历史。
 - 新列表、统计与首个预览在后台一起准备，再替换可见内容；读取失败保留快照，预览失败不丢列表。文本 patch 含完整上下文，解析、选择与虚拟滚动由 Kit `DiffFile`／`DiffState` 提供；图片经 `Repository::file_versions` 和 `src/image_diff.rs` 读取、解码、渲染。
@@ -35,6 +35,7 @@
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
+- [active] 更新 Windows 图标测试包：旧 EXE 只有 manifest、没有图标；已增加 16–256 px ICO、构建时嵌入和真实 EXE 资源加载测试。本地格式、Clippy、51 项测试与 Release 构建通过（macOS 系统关联测试在沙箱外补跑）；下一步在 Windows CI 验证并下载新测试包，仍不公开发布 Release。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -60,4 +61,4 @@
 - `src/app.rs`、`src/change_tree.rs`、`src/image_diff.rs`、`src/file_icons.rs` — 状态、界面、导航与预览。
 - `src/preferences.rs`、`src/strings.rs`、`locales/`、`themes/` — 设置、语言和样式。
 - `src/about.rs`、`LICENSE`、`assets/app-icon/` — About、许可证和正式图标源 `patchlook-v2.png`。
-- `tests/`、`scripts/test_package.py`、`scripts/package.py`、`.github/workflows/desktop.yml` — 验证和三平台打包发布。
+- `build.rs`、`tests/`、`scripts/test_package.py`、`scripts/package.py`、`.github/workflows/desktop.yml` — Windows 图标资源、验证和三平台打包发布。

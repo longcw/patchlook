@@ -71,6 +71,14 @@ The script packages an existing binary and writes its output to `dist/`:
 
 The macOS icon is generated from [the app icon source](../assets/app-icon/patchlook-v2.png). Local macOS packages use ad-hoc signing by default. Linux builds link against system libraries and are not universal distribution packages.
 
+Windows builds embed `assets/app-icon/patchlook.ico` into the executable through `build.rs`. Resource ID `1` is required by GPUI for the window and taskbar icon. The checked-in ICO contains 16–256 px variants, so normal builds do not need image conversion tools. After changing the source logo, regenerate it with ImageMagick:
+
+```sh
+magick assets/app-icon/patchlook-v2.png -define icon:auto-resize=256,128,64,48,32,24,16 assets/app-icon/patchlook.ico
+```
+
+The Windows integration test loads these resources from the actual executable. Resource compilation errors fail the build instead of producing a package without its icon.
+
 For a local signed and notarized macOS build, install a Developer ID Application certificate and store notarization credentials with `xcrun notarytool store-credentials`, then run:
 
 ```sh
