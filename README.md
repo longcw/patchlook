@@ -14,6 +14,8 @@
 
 Inspect local changes, explore commit history, and compare file versions without changing your working tree, staging area, or branches.
 
+![Patchlook reviewing its own commit history in light and dark themes](docs/images/patchlook-light-dark.webp)
+
 ## Features
 
 - **Review changes** — inspect staged, unstaged, and untracked files, with added and deleted line counts.
