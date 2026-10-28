@@ -35,7 +35,6 @@
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
-- [active] 更新 Windows 标题栏交互测试包：修复打开仓库／刷新／语言／主题按钮被 Drag 命中拦截；回归在修复前失败，修复后覆盖完整命中链、按钮点击和空白区域，且本地格式、Clippy、52 项测试及 Release 均通过。下一步 Windows CI 验证与下载交付，保持测试包、不公开发布。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -51,7 +50,7 @@
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
 - v0.1.3 标签（`f806bc9`）云端运行 `40664258971` 三平台验证通过，Release 保持草稿；该标签不含后续 Windows 图标和标题栏修复，正式发布前需使用包含修复的新构建。Windows patch 回归覆盖 LF／CRLF、未暂存／已暂存／历史及极大 inter-hunk 配置；旧版 Git 2.49 的 32 位 long 模拟复现第 60 行重叠并验证修复。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时。
-- Windows 图标修复（`e9763a0`）在运行 `40667085825` 通过 Windows 格式、Clippy、51 项 Rust 测试（含实际 EXE 图标加载）、4 项打包测试和 Release 构建；artifact `12807046049` 已下载到 `dist/windows-icon-test-e9763a0/`，核对云端摘要、ZIP／x64 PE、资源组 ID 1 和 16–256 px 共 7 份图标与源 ICO 字节一致。用户选择先测试，未公开发布；Windows 任务栏／资源管理器视觉显示待用户确认。本地 macOS 检查、51 项测试及 Release 通过，系统程序关联测试需沙箱外补跑；本轮 Linux 最终打包结果未另行确认。
+- 最新 Windows 测试包（`381e87c`）在运行 `40674292572` 完成三平台检查、测试、Release 构建与打包；Windows 52 项 Rust／4 项打包测试通过，含标题栏完整命中链隔离、四个按钮功能、空白区域命中及 EXE 图标加载。artifact `12810310872` 已下载到 `dist/windows-titlebar-test-381e87c/`，核对云端摘要、ZIP／x64 PE、资源组 ID 1 和 7 种尺寸图标与源 ICO 一致。用户选择先测试，未公开发布；Windows 鼠标实机操作与图标视觉显示待用户确认。本地 macOS 52 项测试与 Release 通过，系统程序关联测试需要沙箱外访问 LaunchServices。
 - 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
 
 ## Source Pointers
