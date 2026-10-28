@@ -35,7 +35,6 @@
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
-- [active] 更新 Windows 图标测试包：旧 EXE 只有 manifest、没有图标；已增加 16–256 px ICO、构建时嵌入和真实 EXE 资源加载测试。本地格式、Clippy、51 项测试与 Release 构建通过（macOS 系统关联测试在沙箱外补跑）；下一步在 Windows CI 验证并下载新测试包，仍不公开发布 Release。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -50,8 +49,8 @@
 ## Verification
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
-- v0.1.3（`f806bc9`）云端运行 `40664258971` 三平台检查、测试、优化构建与打包通过，Release 保持草稿，用户选择先验证 Windows 测试包。Windows 50 项 Rust／4 项打包测试通过，含 LF／CRLF、未暂存／已暂存／历史和极大 inter-hunk 配置回归；artifact `12805996249` 已下载到 `dist/windows-test-v0.1.3/`，核对云端 SHA-256、ZIP 完整性、Windows x64 PE 和许可证。旧版 Git 2.49 的 32 位 long 模拟已复现第 60 行重叠并验证修复；Windows GUI 待用户实机验证。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启仍未验收，未量化帧耗时。
-- Windows／Linux 已通过云端原生检查、测试、链接与打包，未做实机交互；CI／开发文档包含 GLib 开发依赖，Linux 安装包仍依赖构建系统动态库。
+- v0.1.3 标签（`f806bc9`）云端运行 `40664258971` 三平台验证通过，Release 保持草稿；该标签不含后续 Windows 图标修复，正式发布前需使用包含修复的新构建。Windows patch 回归覆盖 LF／CRLF、未暂存／已暂存／历史及极大 inter-hunk 配置；旧版 Git 2.49 的 32 位 long 模拟复现第 60 行重叠并验证修复。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时。
+- Windows 图标修复（`e9763a0`）在运行 `40667085825` 通过 Windows 格式、Clippy、51 项 Rust 测试（含实际 EXE 图标加载）、4 项打包测试和 Release 构建；artifact `12807046049` 已下载到 `dist/windows-icon-test-e9763a0/`，核对云端摘要、ZIP／x64 PE、资源组 ID 1 和 16–256 px 共 7 份图标与源 ICO 字节一致。用户选择先测试，未公开发布；Windows 任务栏／资源管理器视觉显示待用户确认。本地 macOS 检查、51 项测试及 Release 通过，系统程序关联测试需沙箱外补跑；本轮 Linux 最终打包结果未另行确认。
 - 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
 
 ## Source Pointers
