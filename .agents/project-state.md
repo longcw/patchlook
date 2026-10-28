@@ -53,7 +53,7 @@
 - Diff 首次布局修复 `a3080ee7` 已由用户确认 macOS 表现正常；消费方回归在旧依赖失败、修复后通过，验证测量后通知及布局稳定后停止重绘。此前 macOS 预览覆盖分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时，Windows／Linux 新菜单与首次 diff 显示的实机效果待确认。
 
 ## Source Pointers
-- `README.md`、`docs/images/`、`docs/development.md` — 产品介绍、正式版实机浅／暗色行内 diff 截图合成、依赖、验证、缓存、签名发布及 Kit 补丁。
+- `README.md`、`README.zh-CN.md`、`docs/images/`、`docs/development.md` — 默认英文及简体中文产品介绍、正式版实机浅／暗色行内 diff 截图合成、依赖、验证、缓存、签名发布及 Kit 补丁。
 - `Cargo.toml`、`Cargo.lock` — 版本、构建配置及依赖来源。
 - `src/git.rs`、`src/external_open.rs` — Git／文件版本契约、系统应用关联及回归。
 - `src/app.rs`、`src/change_tree.rs`、`src/image_diff.rs`、`src/file_icons.rs` — 状态、界面、导航与预览。

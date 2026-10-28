@@ -4,6 +4,8 @@
 
 <h1 align="center">Patchlook</h1>
 
+<p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
+
 <p align="center">A native, read-only Git viewer for macOS, Windows, and Linux.</p>
 
 <p align="center">
@@ -74,3 +76,7 @@ See the [development guide](https://github.com/worldtheater/patchlook/blob/main/
 Built with [Rust](https://www.rust-lang.org/) and [GPUI Kit](https://github.com/longbridge/gpui-kit).
 
 Licensed under the [MIT License](LICENSE).
+
+## Friends
+
+[LINUX DO](https://linux.do/) is a community for discussing technology and sharing open-source projects. Drop by to discover useful tools, share your work, and exchange ideas with other developers.
