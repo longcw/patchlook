@@ -125,7 +125,7 @@ Check the existing submission before rerunning a failed release. An `Accepted` r
 
 Patchlook uses the [GPUI Kit fork](https://github.com/worldtheater/gpui-kit/tree/codex/diff-tool-patches), on the `codex/diff-tool-patches` branch. [Cargo.toml](../Cargo.toml) pins its Git revision through `[patch.crates-io]`; [Cargo.lock](../Cargo.lock) is checked in. Cargo fetches the source automatically, so normal builds need neither a submodule nor a sibling checkout.
 
-The patch series starts from the GPUI Kit 0.8.0 source commit `1676826d9d49b90f4d7b6808b69924f58796f6f1`. Its current tip is `e2a084aedbd36212545cf6242cc1c58f4b834562`.
+The patch series starts from the GPUI Kit 0.8.0 source commit `1676826d9d49b90f4d7b6808b69924f58796f6f1`. Its current tip is `a3080ee72d0a968cfbb07c5be6b10a6d0df687c7`.
 
 | Commit | Purpose |
 | --- | --- |
@@ -135,6 +135,7 @@ The patch series starts from the GPUI Kit 0.8.0 source commit `1676826d9d49b90f4
 | `dcc55bcc` | Add collapsible diff sections and keep change markers aligned with wrapped lines. |
 | `9697b217` | Count contiguous changed blocks independently of folding and layout. |
 | `e2a084ae` | Localize diff controls in nine languages and rebuild when locale resources change. |
+| `a3080ee7` | Defer diff viewport measurement notifications until after drawing so the first layout finishes without further input. |
 
 When updating GPUI Kit:
 

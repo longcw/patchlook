@@ -24,6 +24,91 @@ impl Render for Viewer {
 }
 
 #[gpui_kit::test]
+fn first_plain_text_layout_requests_a_settling_frame(cx: &mut TestAppContext) {
+    use gpui_kit::{ParentElement, div};
+    use std::{cell::Cell, rc::Rc};
+
+    struct Preview {
+        state: Entity<DiffState>,
+        show: bool,
+    }
+    impl Render for Preview {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            // The surrounding screen already observes the document before
+            // opening its diff, as a file-count header or loading view does.
+            let count = self.state.read(cx).files().len();
+            if self.show {
+                Diff::new(&self.state)
+                    .header_visible(false)
+                    .size_full()
+                    .into_any_element()
+            } else {
+                div().child(count.to_string()).into_any_element()
+            }
+        }
+    }
+    cx.update(gpui_kit::init);
+    let files = DiffFile::parse(
+        "--- a/go.mod\n+++ b/go.mod\n@@ -1 +1 @@\n-module example.com/old\n+module example.com/new\n",
+    ).unwrap();
+    let state = cx.new(|cx| {
+        let mut state = DiffState::new([], cx).with_mode(DiffMode::Split);
+        state.set_files(files, cx);
+        state
+    });
+    // Finish presentation before mounting. It must not supply the missing frame.
+    cx.run_until_parked();
+    let (handle, preview) = cx.update(|cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+            cx.new(|_| Preview {
+                state: state.clone(),
+                show: false,
+            })
+        })
+        .unwrap()
+    });
+    cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    cx.run_until_parked();
+    let notifications = Rc::new(Cell::new(0));
+    let count = notifications.clone();
+    let _subscription = cx.update(|cx| cx.observe(&state, move |_, _| count.set(count.get() + 1)));
+    cx.update(|cx| {
+        preview.update(cx, |view, cx| {
+            view.show = true;
+            cx.notify();
+        })
+    });
+    cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    assert!(
+        notifications.get() > 0,
+        "measuring the viewport must schedule another frame after drawing, without mouse input or a forced refresh"
+    );
+    for _ in 0..3 {
+        cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+    let settled = notifications.get();
+    cx.update_window(handle, |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(
+            window
+                .find_all("source")
+                .iter()
+                .any(|row| row.label() == Some("module example.com/new")
+                    && row.bounds().size.width > px(0.))
+        );
+    })
+    .unwrap();
+    assert_eq!(
+        notifications.get(),
+        settled,
+        "stable geometry must not keep requesting frames"
+    );
+}
+
+#[gpui_kit::test]
 fn long_lines_keep_equal_panes_when_wrapping_scrolling_and_resizing(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let left = format!("LEFT {}", "abcdefgh你好 ".repeat(100));

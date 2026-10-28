@@ -27,7 +27,12 @@ use patchlook::{
     git::{Branch, Change, Commit, DiffStats, Repository},
     preferences::{Appearance, Language, Layout, Preferences},
 };
-use std::{ops::Range, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    ops::Range,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -121,6 +126,7 @@ struct ChangeState {
     error: Option<String>,
     load_task: Option<Task<()>>,
     patch_task: Option<Task<()>>,
+    last_file_selection: Option<Instant>,
 }
 
 impl ChangeState {
@@ -145,12 +151,14 @@ impl ChangeState {
             error: None,
             load_task: None,
             patch_task: None,
+            last_file_selection: None,
         }
     }
 
     fn cancel_pending(&mut self) {
         self.load_task = None;
         self.patch_task = None;
+        self.last_file_selection = None;
         self.files_loading = false;
         if self.patch_loading {
             // A cancelled selection has not produced its preview yet.
@@ -858,6 +866,13 @@ impl Patchlook {
         };
         let files = self.files_for_mut(source);
         let change = files.changes[index].clone();
+        let now = cx.background_executor().now();
+        // Only a burst of selections needs to settle. An isolated selection
+        // should start loading immediately, including its first preview.
+        let debounce = files
+            .last_file_selection
+            .replace(now)
+            .is_some_and(|previous| now.duration_since(previous) < FILE_SELECTION_DELAY);
         files.selected_file = Some(index);
         if let Some(tree) = &files.change_tree {
             tree.reveal_file(index, cx);
@@ -870,7 +885,9 @@ impl Patchlook {
         files.error = None;
         files.empty_patch = false;
         files.patch_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(FILE_SELECTION_DELAY).await;
+            if debounce {
+                cx.background_executor().timer(FILE_SELECTION_DELAY).await;
+            }
             let result = cx
                 .background_spawn(async move { FileContent::load(&repo, &change, commit.as_ref()) })
                 .await;
@@ -2742,6 +2759,68 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn isolated_file_selections_load_immediately_but_bursts_wait_for_the_last_file(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let names = ["go.mod", "go.sum", "main.go"];
+        for name in names {
+            std::fs::write(directory.path().join(name), format!("{name}\n")).unwrap();
+        }
+        let (_, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.repository = Some(Repository {
+                        root: directory.path().into(),
+                    });
+                    app.working.loaded = true;
+                    app.working.changes = names
+                        .into_iter()
+                        .map(|path| Change {
+                            path: path.into(),
+                            previous_path: None,
+                            status: 'A',
+                            area: Area::Untracked,
+                        })
+                        .collect();
+                    app
+                })
+            })
+            .unwrap()
+        });
+        let select = |index, cx: &mut TestAppContext| {
+            cx.update(|cx| app.update(cx, |app, cx| app.select_file(index, cx)));
+            cx.run_until_parked();
+        };
+        let verify = |path: &str, loading: bool, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let files = &app.read(cx).working;
+                assert_eq!(files.patch_loading, loading);
+                assert_eq!(files.diff.read(cx).files()[0].path().as_str(), path);
+            });
+        };
+        // No clock advancement: the first file is available as soon as I/O finishes.
+        select(0, cx);
+        verify("go.mod", false, cx);
+        select(1, cx);
+        verify("go.mod", true, cx);
+        cx.executor().advance_clock(FILE_SELECTION_DELAY / 2);
+        select(2, cx);
+        cx.executor()
+            .advance_clock(FILE_SELECTION_DELAY - Duration::from_millis(1));
+        cx.run_until_parked();
+        verify("go.mod", true, cx);
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        verify("main.go", false, cx);
+        // Once the burst settles, another uncached file needs no extra timer.
+        select(1, cx);
+        verify("go.sum", false, cx);
+    }
+
+    #[gpui_kit::test]
     fn titlebar_buttons_exclude_background_hitboxes_and_still_handle_clicks(
         cx: &mut TestAppContext,
     ) {
@@ -3461,7 +3540,6 @@ mod tests {
                 window.click("tree-file-1", cx);
             })
             .unwrap();
-            cx.run_until_parked();
             cx.update_window(handle, |_, window, cx| {
                 window.render_frame(cx);
                 let app = app.read(cx);
@@ -3474,7 +3552,8 @@ mod tests {
                 assert!(window.try_find("image-fit").is_none());
             })
             .unwrap();
-            cx.executor().advance_clock(FILE_SELECTION_DELAY);
+            // The first selection starts I/O without a debounce timer, while
+            // the in-flight frame above still hides the previous preview.
             cx.run_until_parked();
             cx.update_window(handle, |_, window, cx| {
                 window.render_frame(cx);
@@ -3645,7 +3724,17 @@ mod tests {
             );
         })
         .unwrap();
-        // Repeated selection cancels the pending load, preserving the old content.
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(!app.read(cx).active_files().patch_loading);
+            assert_eq!(
+                app.read(cx).active_files().diff.read(cx).files()[0]
+                    .path()
+                    .as_str(),
+                "next.rs"
+            );
+        });
+        // Repeated selection cancels the pending load, preserving the first preview.
         for index in [0, 1] {
             cx.run_until_parked();
             cx.executor().advance_clock(FILE_SELECTION_DELAY / 2);
@@ -3661,7 +3750,7 @@ mod tests {
                 app.read(cx).active_files().diff.read(cx).files()[0]
                     .path()
                     .as_str(),
-                "current.rs"
+                "next.rs"
             );
         });
         cx.executor().advance_clock(Duration::from_millis(1));

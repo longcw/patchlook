@@ -8,7 +8,7 @@
 - Cargo 包／二进制为 `patchlook`，应用标识 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键。`build.rs` 将多尺寸 ICO 以 GPUI 需要的资源 ID 1 嵌入 Windows EXE，资源编译失败会中止构建。标题栏按钮隔离原生拖动命中，语言下拉以完整触发区隔离，空白区域保留拖动。
 - `src/git.rs` 封装 Git CLI，参数不经过 shell；NUL 分隔保留特殊路径，关闭可选锁、外部 diff 和 textconv；全文件上下文使用 `i32::MAX / 2` 并固定 inter-hunk context 为 0，避免旧版 Windows Git 的 32 位整数溢出和重叠 hunk。
 - `src/app.rs` 管理共享仓库与页面。`ChangeState` 分别持有工作区／历史的列表、选择、树、滚动、diff、错误与任务；`HistoryState` 管理 Repos／History 共用的提交、搜索和分页。只缓存当前仓库，隐藏页结果写回所属状态；已加载 Tab 切换不读 Git。切仓库／刷新成功后替换当前页并使另一组状态失效，浏览分支只重载历史。
-- 新列表、统计与首个预览在后台一起准备，再替换可见内容；读取失败保留快照，预览失败不丢列表。文本 patch 含完整上下文，解析、选择与虚拟滚动由 Kit `DiffFile`／`DiffState` 提供；图片经 `Repository::file_versions` 和 `src/image_diff.rs` 读取、解码、渲染。
+- 新列表、统计与首个预览在后台一起准备，再替换可见内容；读取失败保留快照，预览失败不丢列表。文本 patch 含完整上下文，解析、选择与虚拟滚动由 Kit `DiffFile`／`DiffState` 提供；Diff 视口／行高测量变化在绘制结束后通知，保证首次布局自行完成，不依赖高亮完成或窗口移动带动刷新；图片经 `Repository::file_versions` 和 `src/image_diff.rs` 读取、解码、渲染。
 - `src/external_open.rs` 封装外部打开：macOS 使用 NSWorkspace／UTType，Windows 使用 Shell，Linux 使用 GIO。推荐程序携带系统图标，无法取得时用通用图标。普通文件打开工作区最新路径；删除条目读取对应 diff 的原版本到临时副本，由应用保留至退出，不恢复工作区。菜单捕获目标，切换加载期间禁用。
 - `src/change_tree.rs` 压缩单一路径目录，按原始文件索引保留身份；同路径的暂存／未暂存项独立。`src/file_icons.rs` 共用文件类型映射，内嵌 35 个 Material Icon Theme MIT SVG，未知类型用文档图标。
 - `src/preferences.rs` 在系统 `patchlook` 配置目录读写 `preferences.json`，读取与显式保存分离，写入通过临时文件重命名完成。
@@ -18,7 +18,7 @@
 
 ## Project Conventions
 - GPUI 统一从 `gpui_kit` 导入，复用控件与主题；界面文案集中于 `locales/*.json`，九语言键及占位符一致。
-- GPUI Kit 0.8.0 固定到 fork revision `e2a084aedbd36212545cf6242cc1c58f4b834562`；维护 `Cargo.lock`，不提交本机 path override。补丁归属和升级步骤见 `docs/development.md`。
+- GPUI Kit 0.8.0 固定到 fork revision `a3080ee72d0a968cfbb07c5be6b10a6d0df687c7`；维护 `Cargo.lock`，不提交本机 path override。补丁归属和升级步骤见 `docs/development.md`。
 - Git 基准：未暂存为索引对工作区，暂存为 HEAD 对索引；根提交按新增，合并提交比较第一父提交。历史／搜索续页固定首次解析的分支 tip；关键词匹配提交说明子串（忽略大小写）或 SHA 前缀，流式扫描可达历史，每页最多 100 条加一条前瞻。
 - 检查：`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo test --locked`；构建／依赖变更另做 `cargo build --locked --release`，打包测试为 `python -m unittest discover -s scripts -p 'test_*.py'`。Git 和界面测试使用临时仓库／配置；交互验收使用 Release。
 - 缓存统一用根 `target/`，dev 为 `line-tables-only`＋`split-debuginfo = "packed"`，test 继承 dev，保留增量编译；常用检查保持同一测试依赖特性组合，清理步骤见开发文档。
@@ -29,12 +29,13 @@
 - Repos 三栏概览、Changes、History 共用上述状态；Tab 切换保留选择、滚动、目录展开和搜索，历史预览按需加载一次。Repos 的 Recent／Branches 默认等高，拖动结束保存比例，重启／缩放窗口后恢复。
 - 历史分页的 Load more 是尾部条目；未筛选提交超过 20 条时常驻搜索框，筛选后仍保留，Enter／搜索按钮查询完整分支，清空恢复普通历史，Esc 失焦。列表标题高亮匹配词并保留 UTF-8 边界，SHA 前缀不高亮。提交说明可复制、显示／隐藏；短 SHA 悬停、点击复制完整号，原地显示 Copied 两秒。
 - 文件列表支持目录和平铺、统计、键盘定位。左键先折叠再选父目录，右键先展开再选下一可见项；所有选中文件行为均打开 diff。目录行高 22 px，目录图标 16 px、平铺 20 px；文件名修改／重命名蓝色、新增／复制绿色、删除灰色、冲突警示色，根目录路径显示 `.`。移动／改名项显示相对来源 `← 来源`，同名移动只显示原目录，悬停／读屏提供完整说明。
-- 单文件文本 diff 支持并排／行内、语法与行内变化高亮、折行、同步横向滚动、选择复制、上下文展开／收起及改动块计数。顶栏显示文件类型图标与打开方式菜单（系统默认、推荐应用图标＋名称、其他程序），无整文件收起按钮。选择防抖 120 ms，连续选择取消旧任务；详情切文件保留旧预览至新内容就绪，Repos 目录进入另一文件先显示目标加载状态，已完成的同文件预览复用。
+- 单文件文本 diff 支持并排／行内、语法与行内变化高亮、折行、同步横向滚动、选择复制、上下文展开／收起及改动块计数。顶栏显示文件类型图标与打开方式菜单（系统默认、推荐应用图标＋名称、其他程序），无整文件收起按钮。单次选择立即加载；120 ms 内连续选择才尾随防抖并取消旧任务，工作区／历史分别记录选择时间；详情切文件保留旧预览至新内容就绪，Repos 目录进入另一文件先显示目标加载状态，已完成的同文件预览复用。
 - PNG、JPEG、WebP、GIF、BMP、TIFF、ICO、SVG 前后预览，含尺寸／大小、透明棋盘格、适应窗口、1:1、缩放与滚动。
 - 持久化外观、diff 模式、语言、列表模式、行数显示、折行、提交说明开关、最近仓库、各仓库浏览分支、Repos 侧栏高度比例；其他分栏尺寸、窗口位置大小、Tab、选中项、滚动和搜索不持久化。
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
+- [active] Windows 测试包交付：用户已确认 macOS 首次打开 diff 恢复正常，并要求提交、推送和重新打包。下一步核对 main 云端构建、下载产物及摘要，不发布正式 Release。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -49,9 +50,9 @@
 ## Verification
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
-- v0.1.3 标签（`f806bc9`）云端运行 `40664258971` 三平台验证通过，Release 保持草稿；该标签不含后续 Windows 图标和标题栏修复，正式发布前需使用包含修复的新构建。Windows patch 回归覆盖 LF／CRLF、未暂存／已暂存／历史及极大 inter-hunk 配置；旧版 Git 2.49 的 32 位 long 模拟复现第 60 行重叠并验证修复。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时。
+- v0.1.3 标签（`f806bc9`）云端运行 `40664258971` 三平台验证通过，Release 保持草稿；该标签不含后续 Windows 图标、标题栏及 Diff 首次布局修复，正式发布前需使用包含修复的新构建。Windows patch 回归覆盖 LF／CRLF、未暂存／已暂存／历史及极大 inter-hunk 配置；旧版 Git 2.49 的 32 位 long 模拟复现第 60 行重叠并验证修复。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时。
 - 最新 Windows 测试包（`381e87c`）在运行 `40674292572` 完成三平台检查、测试、Release 构建与打包；Windows 52 项 Rust／4 项打包测试通过，含标题栏完整命中链隔离、四个按钮功能、空白区域命中及 EXE 图标加载。artifact `12810310872` 已下载到 `dist/windows-titlebar-test-381e87c/`，核对云端摘要、ZIP／x64 PE、资源组 ID 1 和 7 种尺寸图标与源 ICO 一致。用户选择先测试，未公开发布；Windows 鼠标实机操作与图标视觉显示待用户确认。本地 macOS 52 项测试与 Release 通过，系统程序关联测试需要沙箱外访问 LaunchServices。
-- 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
+- Diff 首次布局修复固定 Kit 补丁 `a3080ee7`，通过格式、Clippy、54 项本机 Rust 测试和 Release 构建；用户已确认 macOS 实际表现正常。`first_plain_text_layout_requests_a_settling_frame` 在旧依赖失败、修复后通过，覆盖高亮已完成且状态已被界面观察时，首次测量发出绘制后的通知、文本获得宽度及布局稳定后停止通知。临时探针已移除；Windows 新包待云端验证。
 
 ## Source Pointers
 - `README.md`、`docs/development.md` — 产品介绍、依赖、验证、缓存、签名发布及 Kit 补丁。
