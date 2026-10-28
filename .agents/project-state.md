@@ -5,7 +5,7 @@
 - 文本 diff 要求 UTF-8；支持的图片独立预览，其他二进制只展示变化信息。运行需要 PATH 中可用的 Git。
 
 ## Current Architecture
-- Cargo 包／二进制为 `patchlook`，应用标识 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键。`build.rs` 将多尺寸 ICO 以 GPUI 需要的资源 ID 1 嵌入 Windows EXE，资源编译失败会中止构建。
+- Cargo 包／二进制为 `patchlook`，应用标识 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键。`build.rs` 将多尺寸 ICO 以 GPUI 需要的资源 ID 1 嵌入 Windows EXE，资源编译失败会中止构建。标题栏按钮隔离原生拖动命中，语言下拉以完整触发区隔离，空白区域保留拖动。
 - `src/git.rs` 封装 Git CLI，参数不经过 shell；NUL 分隔保留特殊路径，关闭可选锁、外部 diff 和 textconv；全文件上下文使用 `i32::MAX / 2` 并固定 inter-hunk context 为 0，避免旧版 Windows Git 的 32 位整数溢出和重叠 hunk。
 - `src/app.rs` 管理共享仓库与页面。`ChangeState` 分别持有工作区／历史的列表、选择、树、滚动、diff、错误与任务；`HistoryState` 管理 Repos／History 共用的提交、搜索和分页。只缓存当前仓库，隐藏页结果写回所属状态；已加载 Tab 切换不读 Git。切仓库／刷新成功后替换当前页并使另一组状态失效，浏览分支只重载历史。
 - 新列表、统计与首个预览在后台一起准备，再替换可见内容；读取失败保留快照，预览失败不丢列表。文本 patch 含完整上下文，解析、选择与虚拟滚动由 Kit `DiffFile`／`DiffState` 提供；图片经 `Repository::file_versions` 和 `src/image_diff.rs` 读取、解码、渲染。
@@ -35,6 +35,7 @@
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
+- [active] 更新 Windows 标题栏交互测试包：修复打开仓库／刷新／语言／主题按钮被 Drag 命中拦截；回归在修复前失败，修复后覆盖完整命中链、按钮点击和空白区域，且本地格式、Clippy、52 项测试及 Release 均通过。下一步 Windows CI 验证与下载交付，保持测试包、不公开发布。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -49,7 +50,7 @@
 ## Verification
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
-- v0.1.3 标签（`f806bc9`）云端运行 `40664258971` 三平台验证通过，Release 保持草稿；该标签不含后续 Windows 图标修复，正式发布前需使用包含修复的新构建。Windows patch 回归覆盖 LF／CRLF、未暂存／已暂存／历史及极大 inter-hunk 配置；旧版 Git 2.49 的 32 位 long 模拟复现第 60 行重叠并验证修复。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时。
+- v0.1.3 标签（`f806bc9`）云端运行 `40664258971` 三平台验证通过，Release 保持草稿；该标签不含后续 Windows 图标和标题栏修复，正式发布前需使用包含修复的新构建。Windows patch 回归覆盖 LF／CRLF、未暂存／已暂存／历史及极大 inter-hunk 配置；旧版 Git 2.49 的 32 位 long 模拟复现第 60 行重叠并验证修复。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时。
 - Windows 图标修复（`e9763a0`）在运行 `40667085825` 通过 Windows 格式、Clippy、51 项 Rust 测试（含实际 EXE 图标加载）、4 项打包测试和 Release 构建；artifact `12807046049` 已下载到 `dist/windows-icon-test-e9763a0/`，核对云端摘要、ZIP／x64 PE、资源组 ID 1 和 16–256 px 共 7 份图标与源 ICO 字节一致。用户选择先测试，未公开发布；Windows 任务栏／资源管理器视觉显示待用户确认。本地 macOS 检查、51 项测试及 Release 通过，系统程序关联测试需沙箱外补跑；本轮 Linux 最终打包结果未另行确认。
 - 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
 

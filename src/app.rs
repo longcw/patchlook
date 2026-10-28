@@ -1315,6 +1315,8 @@ impl Patchlook {
                 .to_string_lossy()
                 .into_owned()
         });
+        // Controls must hide the underlying Drag hitbox from Windows' native
+        // hit testing, which runs before ordinary mouse/click event handlers.
         TitleBar::new().bg(cx.theme().title_bar).child(
             h_flex()
                 .size_full()
@@ -1323,6 +1325,7 @@ impl Patchlook {
                 .gap_2()
                 .child(
                     Button::new("open-repository")
+                        .occlude()
                         .icon(IconName::FolderOpen)
                         .small()
                         .ghost()
@@ -1369,6 +1372,7 @@ impl Patchlook {
                 })
                 .child(
                     icon_button("refresh", IconName::RefreshCw, "refresh")
+                        .occlude()
                         .xsmall()
                         .text_color(cx.theme().muted_foreground)
                         .disabled(self.repository.is_none() || self.loading)
@@ -1377,7 +1381,8 @@ impl Patchlook {
                         ),
                 )
                 .child(div().flex_1())
-                .child(self.language_menu(cx))
+                // Keep the dropdown's click-handling wrapper above the blocker.
+                .child(div().occlude().child(self.language_menu(cx)))
                 .child({
                     let (icon, current) = appearance_label(self.preferences.appearance);
                     let (_, next) = appearance_label(self.preferences.appearance.next());
@@ -1385,6 +1390,7 @@ impl Patchlook {
                         .replace("{current}", tr(current))
                         .replace("{next}", tr(next));
                     Button::new("theme")
+                        .occlude()
                         .icon(icon)
                         .small()
                         .ghost()
@@ -2733,6 +2739,136 @@ mod tests {
             _subscriptions: vec![],
             focus: cx.focus_handle(),
         }
+    }
+
+    #[gpui_kit::test]
+    fn titlebar_buttons_exclude_background_hitboxes_and_still_handle_clicks(
+        cx: &mut TestAppContext,
+    ) {
+        use std::{cell::RefCell, rc::Rc};
+
+        struct ToolbarProbe {
+            app: Entity<Patchlook>,
+            background: Rc<RefCell<Option<Hitbox>>>,
+        }
+        impl Render for ToolbarProbe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let background = self.background.clone();
+                let toolbar = self
+                    .app
+                    .update(cx, |app, cx| app.toolbar(cx).into_any_element());
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        canvas(
+                            move |bounds, window, _| {
+                                *background.borrow_mut() =
+                                    Some(window.insert_hitbox(bounds, HitboxBehavior::Normal));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(toolbar)
+            }
+        }
+
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        git(directory.path(), &["init", "-b", "main"]);
+        std::fs::write(directory.path().join("refresh.txt"), "Refresh me\n").unwrap();
+        let repository = Repository::open(directory.path()).unwrap();
+        let background = Rc::new(RefCell::new(None));
+        let (handle, probe) = cx.update(|cx| {
+            gpui_kit::open_window(TitleBar::window_options(), cx, |window, cx| {
+                let app = cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.repository = Some(repository);
+                    app
+                });
+                cx.new(|_| ToolbarProbe {
+                    app,
+                    background: background.clone(),
+                })
+            })
+            .unwrap()
+        });
+        let app = cx.update(|cx| probe.read(cx).app.clone());
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            for id in ["open-repository", "refresh", "language", "theme"] {
+                let bounds = window.find(id).bounds();
+                for position in [bounds.center(), bounds.origin + point(px(1.), px(1.))] {
+                    window.simulate_mouse_move(position, cx);
+                    window.render_frame(cx);
+                    // Windows checks the full hit-test chain, not only hovered items.
+                    // This API tests membership in that same chain, so scroll-only
+                    // blocking would not incorrectly pass as a native drag exclusion.
+                    assert!(
+                        !background
+                            .borrow()
+                            .as_ref()
+                            .unwrap()
+                            .should_handle_scroll(window),
+                        "{id} still exposes its titlebar background to native hit testing"
+                    );
+                }
+            }
+            let refresh = window.find("refresh").bounds();
+            let language = window.find("language").bounds();
+            let blank = point((refresh.right() + language.left()) / 2., refresh.center().y);
+            window.simulate_mouse_move(blank, cx);
+            window.render_frame(cx);
+            assert!(
+                background
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .should_handle_scroll(window)
+            );
+
+            let next = app.read(cx).preferences.appearance.next();
+            window.click("theme", cx);
+            assert_eq!(app.read(cx).preferences.appearance, next);
+            window.render_frame(cx);
+            window.click("language", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_some());
+            window.press("escape", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("open-repository", cx);
+        })
+        .unwrap();
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(|_| None);
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.click("refresh", cx);
+            assert!(app.read(cx).loading);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let app = app.read(cx);
+            assert!(!app.loading);
+            assert!(
+                app.working
+                    .changes
+                    .iter()
+                    .any(|change| change.path == std::path::Path::new("refresh.txt"))
+            );
+        });
     }
 
     #[gpui_kit::test]
