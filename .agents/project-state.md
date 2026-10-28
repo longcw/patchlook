@@ -35,6 +35,7 @@
 - Windows 和 Linux 标题栏左侧提供“≡”应用菜单，仅含“关于 Patchlook”和“退出 Patchlook”，复用现有动作并隔离原生拖动命中；macOS 使用系统菜单。关于页含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
+- [active] 发布 v0.1.4 正式版本：包含最新 Windows／Linux 菜单、Windows patch／图标／标题栏及首次 diff 重绘修复；用户已授权发布。下一步推送版本标签，核对三平台测试和产物、macOS 签名／公证／票据后发布 Release。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
