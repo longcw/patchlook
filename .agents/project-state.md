@@ -35,6 +35,7 @@
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
+- [active] 发布 v0.1.3 Windows 修复包：重叠 hunk 修复已提交，本地验证通过；下一步推送版本标签、检查云端原生回归与打包，确认下载产物后发布 Release。Windows GUI 尚未实机验收。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
