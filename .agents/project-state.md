@@ -35,7 +35,6 @@
 - Windows 和 Linux 标题栏左侧提供“≡”应用菜单，仅含“关于 Patchlook”和“退出 Patchlook”，复用现有动作并隔离原生拖动命中；macOS 使用系统菜单。关于页含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
-- [active] Windows／Linux 精简菜单交付：仅含关于与退出，本机验证完成；用户要求提交推送并触发打包。下一步核对云端平台测试和打包结果，不发布正式 Release。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -51,8 +50,8 @@
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
 - v0.1.3 标签（`f806bc9`）云端运行 `40664258971` 三平台验证通过，Release 保持草稿；该标签不含后续桌面修复和精简应用菜单，正式发布前需使用包含修复的新构建。Windows patch 回归覆盖 LF／CRLF、未暂存／已暂存／历史及极大 inter-hunk 配置；旧版 Git 2.49 的 32 位 long 模拟复现第 60 行重叠并验证修复。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启未验收，未量化帧耗时。
-- 最新 Windows 测试包（`e011f59`）在运行 `40691913698` 完成三平台检查、测试、Release 构建与打包；Windows 54 项 Rust／4 项打包测试通过，含首次布局自动重绘、选择防抖、标题栏交互和 EXE 图标加载。artifact `12818033313` 已下载到 `dist/windows-diff-repaint-test-e011f59/`，核对源提交、云端摘要、ZIP／x64 PE、资源组 ID 1 和 7 种尺寸图标与源 ICO 一致。用户选择先测试，未公开发布；macOS 首次 diff 显示已由用户确认，Windows 新包实机效果待确认。
-- Windows／Linux 应用菜单通过本机格式、Clippy 和 55 项 Rust 测试；菜单探针覆盖仅两项操作、Tab／Enter、Esc 恢复焦点、关于页显示及退出动作，两平台标题栏命中回归已扩展到新按钮，云端构建和实机验证尚未完成。Diff 首次布局修复 `a3080ee7` 已由用户确认 macOS 表现正常；消费方回归在旧依赖失败、修复后通过，验证测量后通知及布局稳定后停止重绘。
+- 最新 Windows／Linux 测试包（`bcd8988`）在运行 `40705396163` 完成三平台格式、Clippy、测试、Release 构建与打包；Windows／macOS 55 项、Linux 54 项 Rust 测试及各 4 项打包测试通过。Windows artifact `12823912443`、Linux artifact `12823503669` 已下载到 `dist/desktop-menu-test-bcd8988/`，核对源提交、云端摘要、压缩包、许可证及 x64 PE／ELF；Windows 资源组 ID 1 和 7 种尺寸图标与源 ICO 一致。用户选择先测试，未公开发布；Windows／Linux 新菜单和首次 diff 显示的实机效果待确认。
+- Windows／Linux 应用菜单交互回归在对应云端平台通过，覆盖仅两项操作、Tab／Enter、Esc 恢复焦点、关于页显示、退出动作及标题栏拖动命中隔离；macOS 断言实际标题栏不含该菜单，使用测试探针验证菜单行为。Diff 首次布局修复 `a3080ee7` 已由用户确认 macOS 表现正常；消费方回归在旧依赖失败、修复后通过，验证测量后通知及布局稳定后停止重绘。
 
 ## Source Pointers
 - `README.md`、`docs/development.md` — 产品介绍、依赖、验证、缓存、签名发布及 Kit 补丁。
