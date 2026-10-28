@@ -1,5 +1,6 @@
 {
   "app_name": "Patchlook",
+  "application_menu": "アプリケーションメニュー",
   "open_repository": "リポジトリを開く",
   "remove_repository": "最近のリストからリポジトリを削除",
   "refresh": "再読み込み",

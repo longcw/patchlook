@@ -1,5 +1,6 @@
 {
   "app_name": "Patchlook",
+  "application_menu": "Menu de l’application",
   "open_repository": "Ouvrir un dépôt",
   "remove_repository": "Retirer le dépôt de la liste des dépôts récents",
   "refresh": "Actualiser",

@@ -1,5 +1,6 @@
 {
   "app_name": "Patchlook",
+  "application_menu": "应用菜单",
   "open_repository": "打开仓库",
   "remove_repository": "从最近列表移除仓库",
   "refresh": "刷新",

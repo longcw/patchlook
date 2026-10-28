@@ -1150,6 +1150,23 @@ fn list_scrollbar(id: &'static str, handle: &UniformListScrollHandle) -> Div {
 }
 
 impl Patchlook {
+    fn application_menu(&self, cx: &App) -> impl IntoElement {
+        let fallback_focus = self.focus.clone();
+        // Block the titlebar's native drag hitbox around the whole trigger.
+        div().occlude().child(
+            icon_button("application-menu", IconName::Menu, "application_menu")
+                .text_color(cx.theme().muted_foreground)
+                .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, window, cx| {
+                    menu.action_context(
+                        window.focused(cx).unwrap_or_else(|| fallback_focus.clone()),
+                    )
+                    .menu(tr("about"), Box::new(About))
+                    .separator()
+                    .menu(tr("quit"), Box::new(Quit))
+                }),
+        )
+    }
+
     fn language_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let app = cx.entity().downgrade();
         Button::new("language")
@@ -1340,6 +1357,10 @@ impl Patchlook {
                 .min_w_0()
                 .pr_2()
                 .gap_2()
+                .when(
+                    cfg!(any(target_os = "windows", target_os = "linux")),
+                    |bar| bar.child(self.application_menu(cx)),
+                )
                 .child(
                     Button::new("open-repository")
                         .occlude()
@@ -2878,7 +2899,13 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             window.render_frame(cx);
-            for id in ["open-repository", "refresh", "language", "theme"] {
+            let mut controls = vec!["open-repository", "refresh", "language", "theme"];
+            if cfg!(any(target_os = "windows", target_os = "linux")) {
+                controls.push("application-menu");
+            } else {
+                assert!(window.try_find("application-menu").is_none());
+            }
+            for id in controls {
                 let bounds = window.find(id).bounds();
                 for position in [bounds.center(), bounds.origin + point(px(1.), px(1.))] {
                     window.simulate_mouse_move(position, cx);
@@ -2948,6 +2975,115 @@ mod tests {
                     .any(|change| change.path == std::path::Path::new("refresh.txt"))
             );
         });
+    }
+
+    #[gpui_kit::test]
+    fn application_menu_opens_about_and_dispatches_quit(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        struct MenuProbe(Entity<Patchlook>);
+        impl Render for MenuProbe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    // The extra test trigger sits outside Patchlook on macOS;
+                    // give it the same ancestor action route as the real toolbar.
+                    .on_action(cx.listener(|this, action: &About, window, cx| {
+                        this.0
+                            .update(cx, |app, cx| app.show_about(action, window, cx));
+                    }))
+                    .child(self.0.clone())
+                    .when(
+                        !cfg!(any(target_os = "windows", target_os = "linux")),
+                        |view| {
+                            // Exercise the same trigger on macOS test hosts without
+                            // adding it to the macOS application's real toolbar.
+                            view.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .child(self.0.read(cx).application_menu(cx)),
+                            )
+                        },
+                    )
+            }
+        }
+        let quits = Rc::new(Cell::new(0));
+        let on_quit = quits.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+            cx.on_action(move |_: &Quit, _| on_quit.set(on_quit.get() + 1));
+        });
+        let (handle, probe) = cx.update(|cx| {
+            gpui_kit::open_window(TitleBar::window_options(), cx, |window, cx| {
+                let app = cx.new(|cx| test_app(window, cx));
+                window.focus(&app.read(cx).focus.clone(), cx);
+                cx.new(|_| MenuProbe(app))
+            })
+            .unwrap()
+        });
+        let focus = cx.update(|cx| probe.read(cx).0.read(cx).focus.clone());
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("application-menu", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let menu = window.within("popup-menu");
+            assert_eq!(menu.find(0usize).label(), Some(tr("about")));
+            assert_eq!(menu.find(2usize).label(), Some(tr("quit")));
+            assert!(menu.try_find(3usize).is_none());
+            window.press("escape", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_none());
+            assert_eq!(window.focused(cx), Some(focus));
+            // The trigger is keyboard reachable; Enter opens its dropdown.
+            for _ in 0..16 {
+                window.press("tab", cx);
+                if window.find("application-menu").focused() == Some(true) {
+                    break;
+                }
+            }
+            assert_eq!(window.find("application-menu").focused(), Some(true));
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_some());
+            window.within("popup-menu").click(0usize, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("about-content").visible());
+            window.press("escape", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.click("application-menu", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("up", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(quits.get(), 1);
     }
 
     #[gpui_kit::test]

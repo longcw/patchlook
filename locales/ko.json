@@ -1,5 +1,6 @@
 {
   "app_name": "Patchlook",
+  "application_menu": "앱 메뉴",
   "open_repository": "저장소 열기",
   "remove_repository": "최근 목록에서 저장소 제거",
   "refresh": "새로 고침",

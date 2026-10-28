@@ -1,5 +1,6 @@
 {
   "app_name": "Patchlook",
+  "application_menu": "應用程式選單",
   "open_repository": "開啟儲存庫",
   "remove_repository": "從最近列表移除儲存庫",
   "refresh": "重新整理",
