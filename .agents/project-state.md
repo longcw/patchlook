@@ -35,7 +35,6 @@
 - 关于页仅由应用菜单打开，含 logo、版本、九语言简介、MIT 正文、GitHub／反馈链接；关闭按钮、Esc、遮罩均淡出。根 LICENSE 和文件图标许可证随三平台包分发。
 
 ### In Progress
-- [active] 发布 v0.1.3 Windows 修复包：重叠 hunk 修复已提交，本地验证通过；下一步推送版本标签、检查云端原生回归与打包，确认下载产物后发布 Release。Windows GUI 尚未实机验收。
 - [paused] 提交说明局部高亮与实时拖选：用户决定不改 Kit Base，待上游支持／修复后再评估。当前 `SelectableText` 缺局部高亮 API，拖选变化未触发窗口重绘；列表标题高亮已完成。
 
 ### Next
@@ -50,7 +49,7 @@
 ## Verification
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
-- Windows patch 上下文参数修正通过格式、Clippy 和本地 51 项 Rust 测试；回归覆盖 LF／CRLF、未暂存／已暂存／历史、极大 inter-hunk 用户配置。使用 Git 2.49 的 xemit 源码模拟 Windows 的 32 位 long，复现第 60 行重叠 hunk，安全参数生成的 patch 解析通过；尚未在 Windows 实机复验。此前 macOS Release 预览已确认分支标签、按钮配色、默认浅色语法颜色与深灰正文，并实测类型图标、Tab 复用、搜索、复制、偏好恢复、About、外部打开和应用菜单。真实拖动分栏后重启仍未验收；未量化帧耗时。
+- v0.1.3（`f806bc9`）云端运行 `40664258971` 三平台检查、测试、优化构建与打包通过，Release 保持草稿，用户选择先验证 Windows 测试包。Windows 50 项 Rust／4 项打包测试通过，含 LF／CRLF、未暂存／已暂存／历史和极大 inter-hunk 配置回归；artifact `12805996249` 已下载到 `dist/windows-test-v0.1.3/`，核对云端 SHA-256、ZIP 完整性、Windows x64 PE 和许可证。旧版 Git 2.49 的 32 位 long 模拟已复现第 60 行重叠并验证修复；Windows GUI 待用户实机验证。此前 macOS 预览确认分支标签、配色、Tab、搜索、复制、偏好、About 与外部打开；真实拖动分栏后重启仍未验收，未量化帧耗时。
 - Windows／Linux 已通过云端原生检查、测试、链接与打包，未做实机交互；CI／开发文档包含 GLib 开发依赖，Linux 安装包仍依赖构建系统动态库。
 - 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
 
