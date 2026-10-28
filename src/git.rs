@@ -464,10 +464,13 @@ impl Repository {
             "--no-color",
             "--src-prefix=a/",
             "--dst-prefix=b/",
+            "--inter-hunk-context=0",
         ]);
         // Give the viewer all unchanged context so every folded wave can expand.
-        // Git takes a signed integer here; its maximum expresses full-file context.
-        cmd.arg(format!("--unified={}", i32::MAX));
+        // Older Git computes 2 * context + inter-hunk context in a signed long,
+        // which is 32 bits on Windows. Leave room for doubling and override the
+        // user's inter-hunk padding so the calculation cannot wrap negative.
+        cmd.arg(format!("--unified={}", i32::MAX / 2));
         if !untracked {
             cmd.arg("--find-renames");
         }
@@ -1099,21 +1102,54 @@ mod tests {
     }
 
     #[test]
-    fn patch_includes_unchanged_context_for_expansion() {
-        let (_temp, repo) = fixture();
-        let before = (0..120).map(|i| format!("line_{i}\n")).collect::<String>();
-        fs::write(repo.root.join("context.rs"), &before).unwrap();
-        commit(&repo, "Full context");
-        let after = before
-            .replace("line_10\n", "changed_10\n")
-            .replace("line_100\n", "changed_100\n");
-        fs::write(repo.root.join("context.rs"), after).unwrap();
-        let change = repo.snapshot().unwrap().changes.remove(0);
-        let patch = repo.patch(&change, None).unwrap();
-        // These rows are far outside normal Git context but must be available
-        // when the user expands a folded range, including either file edge.
-        for line in [0, 50, 119] {
-            assert!(patch.contains(&format!(" line_{line}\n")));
+    fn full_context_patches_are_parseable_for_worktree_index_and_history() {
+        use gpui_kit::component::diff::DiffFile;
+
+        for eol in ["\n", "\r\n"] {
+            let (_temp, repo) = fixture();
+            // A user setting must not push Git's hunk arithmetic past LONG_MAX.
+            run(
+                &repo.root,
+                &["config", "diff.interHunkContext", &i32::MAX.to_string()],
+            );
+            let before = (0..120)
+                .map(|i| format!("line_{i}{eol}"))
+                .collect::<String>();
+            fs::write(repo.root.join("context.rs"), &before).unwrap();
+            commit(&repo, "Full context");
+            let after = before
+                .replace(&format!("line_10{eol}"), &format!("changed_10{eol}"))
+                .replace(&format!("line_100{eol}"), &format!("changed_100{eol}"));
+            fs::write(repo.root.join("context.rs"), after).unwrap();
+
+            let verify = |change: &Change, commit: Option<&Commit>| {
+                let patch = repo.patch(change, commit).unwrap();
+                let files = DiffFile::parse(&patch).unwrap();
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].additions(), 2);
+                assert_eq!(files[0].deletions(), 2);
+                assert_eq!(
+                    patch.lines().filter(|line| line.starts_with("@@ ")).count(),
+                    1
+                );
+                // File edges and distant unchanged rows remain expandable.
+                for line in [0, 50, 119] {
+                    assert!(patch.contains(&format!(" line_{line}{eol}")));
+                }
+            };
+            let unstaged = repo.snapshot().unwrap().changes.remove(0);
+            assert_eq!(unstaged.area, Area::Unstaged);
+            verify(&unstaged, None);
+
+            run(&repo.root, &["add", "--all"]);
+            let staged = repo.snapshot().unwrap().changes.remove(0);
+            assert_eq!(staged.area, Area::Staged);
+            verify(&staged, None);
+
+            commit(&repo, "Two separated changes");
+            let selected = repo.history(0, None).unwrap().commits.remove(0);
+            let historical = repo.commit_changes(&selected).unwrap().remove(0);
+            verify(&historical, Some(&selected));
         }
     }
 

@@ -6,7 +6,7 @@
 
 ## Current Architecture
 - Cargo 包／二进制为 `patchlook`，应用标识 `dev.patchlook.app`；`src/main.rs` 初始化窗口、主题、菜单和快捷键。
-- `src/git.rs` 封装 Git CLI，参数不经过 shell；NUL 分隔保留特殊路径，关闭可选锁、外部 diff 和 textconv。
+- `src/git.rs` 封装 Git CLI，参数不经过 shell；NUL 分隔保留特殊路径，关闭可选锁、外部 diff 和 textconv；全文件上下文使用 `i32::MAX / 2` 并固定 inter-hunk context 为 0，避免旧版 Windows Git 的 32 位整数溢出和重叠 hunk。
 - `src/app.rs` 管理共享仓库与页面。`ChangeState` 分别持有工作区／历史的列表、选择、树、滚动、diff、错误与任务；`HistoryState` 管理 Repos／History 共用的提交、搜索和分页。只缓存当前仓库，隐藏页结果写回所属状态；已加载 Tab 切换不读 Git。切仓库／刷新成功后替换当前页并使另一组状态失效，浏览分支只重载历史。
 - 新列表、统计与首个预览在后台一起准备，再替换可见内容；读取失败保留快照，预览失败不丢列表。文本 patch 含完整上下文，解析、选择与虚拟滚动由 Kit `DiffFile`／`DiffState` 提供；图片经 `Repository::file_versions` 和 `src/image_diff.rs` 读取、解码、渲染。
 - `src/external_open.rs` 封装外部打开：macOS 使用 NSWorkspace／UTType，Windows 使用 Shell，Linux 使用 GIO。推荐程序携带系统图标，无法取得时用通用图标。普通文件打开工作区最新路径；删除条目读取对应 diff 的原版本到临时副本，由应用保留至退出，不恢复工作区。菜单捕获目标，切换加载期间禁用。
@@ -49,7 +49,7 @@
 ## Verification
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
-- 当前本地分支显示、工具栏配色与浅色代码主题调整通过格式、Clippy、51 项 Rust 测试及 Release 构建；macOS 预览确认顶部分支随 Tab 切换、History 无重复分支标签，并核对浅色默认语法配色与深灰正文的显示；本轮未另做 Windows／Linux 验收。此前 macOS Release 实测类型图标、紧凑列表、Tab 复用、历史搜索、复制反馈、偏好重启恢复、About 居中和动画；外部打开已验证暂存项打开工作区最新内容、删除项通过“其他程序…”打开临时副本，应用图标与键盘菜单正常。原生拖动工具曾报 `noWindowsAvailable`，真实拖动后重启仍未验收；未量化帧耗时。
+- Windows patch 上下文参数修正通过格式、Clippy 和本地 51 项 Rust 测试；回归覆盖 LF／CRLF、未暂存／已暂存／历史、极大 inter-hunk 用户配置。使用 Git 2.49 的 xemit 源码模拟 Windows 的 32 位 long，复现第 60 行重叠 hunk，安全参数生成的 patch 解析通过；尚未在 Windows 实机复验。此前 macOS Release 预览已确认分支标签、按钮配色、默认浅色语法颜色与深灰正文，并实测类型图标、Tab 复用、搜索、复制、偏好恢复、About、外部打开和应用菜单。真实拖动分栏后重启仍未验收；未量化帧耗时。
 - Windows／Linux 已通过云端原生检查、测试、链接与打包，未做实机交互；CI／开发文档包含 GLib 开发依赖，Linux 安装包仍依赖构建系统动态库。
 - 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
 
