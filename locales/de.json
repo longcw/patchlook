@@ -101,5 +101,7 @@
   "other_application": "Andere Anwendung…",
   "select_application": "Anwendung auswählen",
   "open_file_failed": "Datei kann nicht geöffnet werden",
-  "applications_failed": "Anwendungen können nicht aufgelistet werden"
+  "applications_failed": "Anwendungen können nicht aufgelistet werden",
+  "working_branch_tooltip": "Arbeitsverzeichnis-Branch: {branch}",
+  "viewed_branch_tooltip": "Angezeigter Branch: {branch}\nArbeitsverzeichnis-Branch: {worktree}"
 }

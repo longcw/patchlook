@@ -101,5 +101,7 @@
   "other_application": "その他のアプリ…",
   "select_application": "アプリケーションを選択",
   "open_file_failed": "ファイルを開けません",
-  "applications_failed": "アプリケーション一覧を取得できません"
+  "applications_failed": "アプリケーション一覧を取得できません",
+  "working_branch_tooltip": "作業ツリーのブランチ: {branch}",
+  "viewed_branch_tooltip": "閲覧中のブランチ: {branch}\n作業ツリーのブランチ: {worktree}"
 }

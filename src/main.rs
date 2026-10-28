@@ -30,6 +30,16 @@ fn main() {
             light.colors.secondary_hover = light_overrides.colors.secondary_hover;
             light.colors.secondary_active = light_overrides.colors.secondary_active;
             light.colors.button_active = light_overrides.colors.button_active;
+            if let Some(overrides) = light_overrides.highlight {
+                let highlight = light
+                    .highlight
+                    .as_mut()
+                    .expect("The default light theme must include syntax colors");
+                highlight.editor_foreground = overrides.editor_foreground;
+                highlight.syntax.variable = overrides.syntax.variable;
+                highlight.syntax.property = overrides.syntax.property;
+                highlight.syntax.embedded = overrides.syntax.embedded;
+            }
             component::Theme::update(cx, |theme| {
                 theme.dark_theme = dark;
                 theme.light_theme = std::rc::Rc::new(light);

@@ -8,5 +8,19 @@
     "secondary.hover.background": "#ededed",
     "secondary.active.background": "#e5e5e5",
     "button.active.background": "#dfdfdf"
+  },
+  "highlight": {
+    "editor_foreground": "#50565f",
+    "syntax": {
+      "variable": {
+        "color": "#50565f"
+      },
+      "property": {
+        "color": "#50565f"
+      },
+      "embedded": {
+        "color": "#50565f"
+      }
+    }
   }
 }

@@ -101,5 +101,7 @@
   "other_application": "Otra aplicación…",
   "select_application": "Elegir una aplicación",
   "open_file_failed": "No se pudo abrir el archivo",
-  "applications_failed": "No se pudieron listar las aplicaciones"
+  "applications_failed": "No se pudieron listar las aplicaciones",
+  "working_branch_tooltip": "Rama de trabajo: {branch}",
+  "viewed_branch_tooltip": "Rama consultada: {branch}\nRama de trabajo: {worktree}"
 }

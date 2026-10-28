@@ -101,5 +101,7 @@
   "other_application": "Autre application…",
   "select_application": "Choisir une application",
   "open_file_failed": "Impossible d’ouvrir le fichier",
-  "applications_failed": "Impossible de lister les applications"
+  "applications_failed": "Impossible de lister les applications",
+  "working_branch_tooltip": "Branche de travail : {branch}",
+  "viewed_branch_tooltip": "Branche consultée : {branch}\nBranche de travail : {worktree}"
 }

@@ -12,7 +12,7 @@
 - `src/external_open.rs` 封装外部打开：macOS 使用 NSWorkspace／UTType，Windows 使用 Shell，Linux 使用 GIO。推荐程序携带系统图标，无法取得时用通用图标。普通文件打开工作区最新路径；删除条目读取对应 diff 的原版本到临时副本，由应用保留至退出，不恢复工作区。菜单捕获目标，切换加载期间禁用。
 - `src/change_tree.rs` 压缩单一路径目录，按原始文件索引保留身份；同路径的暂存／未暂存项独立。`src/file_icons.rs` 共用文件类型映射，内嵌 35 个 Material Icon Theme MIT SVG，未知类型用文档图标。
 - `src/preferences.rs` 在系统 `patchlook` 配置目录读写 `preferences.json`，读取与显式保存分离，写入通过临时文件重命名完成。
-- `src/strings.rs` 管理九语言资源并与 Kit 共用 locale；`themes/` 提供统一配色。窗口重新激活重读系统语言，系统外观通过订阅更新。
+- `src/strings.rs` 管理九语言资源并与 Kit 共用 locale；`themes/` 提供统一配色，浅色沿用 Kit 默认语法配色，仅将正文和普通变量／属性／嵌入文本调为深灰，深色使用自定义低饱和度主题；Diff 正文读取主题的 `editor_foreground`（当前 Syntect 后端的 JSON 字段名）。窗口重新激活重读系统语言，系统外观通过订阅更新。
 - `src/about.rs` 复用 Kit Base Dialog／Presence，在窗口内居中显示关于页和协议；淡出结束才卸载遮罩、恢复焦点，遵循减少动态效果设置。版本、仓库与协议标识来自 Cargo 元数据。
 - `.github/workflows/desktop.yml` 在 main／PR 执行三平台检查和开发打包；匹配 Cargo 版本的 v 标签触发 macOS Developer ID 签名、公证和票据验证，三平台通过后创建 Release 草稿。`scripts/package.py` 默认 ad-hoc，正式签名失败不降级。手动工作流的 `notary_submission_id` 只查询既有 Apple 提交，不构建或上传。
 
@@ -25,7 +25,7 @@
 
 ## Implementation State
 ### Implemented
-- 最近仓库按名称忽略大小写排序，同名按路径排序；访问不改变顺序。Recent 加／减号可添加、移除记录，移除后选择相邻仓库，最后一项清空内容，不删磁盘文件。浏览分支按仓库保存，不改变实际 HEAD；Changes 始终对应工作区。
+- 最近仓库按名称忽略大小写排序，同名按路径排序；访问不改变顺序。Recent 加／减号可添加、移除记录，移除后选择相邻仓库，最后一项清空内容，不删磁盘文件。浏览分支按仓库保存，不改变实际 HEAD；Changes 始终对应工作区。窗口顶部分支跟随视图：Repos／History 显示浏览分支，Changes 显示工作区分支，悬停说明两者含义；History 的提交列表标题和文件树根节点不再重复显示分支名。
 - Repos 三栏概览、Changes、History 共用上述状态；Tab 切换保留选择、滚动、目录展开和搜索，历史预览按需加载一次。Repos 的 Recent／Branches 默认等高，拖动结束保存比例，重启／缩放窗口后恢复。
 - 历史分页的 Load more 是尾部条目；未筛选提交超过 20 条时常驻搜索框，筛选后仍保留，Enter／搜索按钮查询完整分支，清空恢复普通历史，Esc 失焦。列表标题高亮匹配词并保留 UTF-8 边界，SHA 前缀不高亮。提交说明可复制、显示／隐藏；短 SHA 悬停、点击复制完整号，原地显示 Copied 两秒。
 - 文件列表支持目录和平铺、统计、键盘定位。左键先折叠再选父目录，右键先展开再选下一可见项；所有选中文件行为均打开 diff。目录行高 22 px，目录图标 16 px、平铺 20 px；文件名修改／重命名蓝色、新增／复制绿色、删除灰色、冲突警示色，根目录路径显示 `.`。移动／改名项显示相对来源 `← 来源`，同名移动只显示原目录，悬停／读屏提供完整说明。
@@ -49,7 +49,7 @@
 ## Verification
 - v0.1.2（`d76bfa0`）云端运行 `40584779645` 三平台格式、Clippy、测试、Release 构建和打包通过：macOS 51 项、其他平台 50 项 Rust 测试，各 4 项 Python 打包测试。该版本已公开发布到 GitHub Releases 并标为 Latest，含 macOS arm64 DMG／ZIP、Windows amd64 ZIP、Linux x86_64 tar.gz。
 - macOS Developer ID／Hardened Runtime 签名、公证及票据验证通过；Apple 提交 `6648a532-b61d-440d-96d6-0ae371468683` 为 Accepted。本地下载至 `dist/v0.1.2/` 后核对 CI 摘要、版本、许可证、签名、应用／DMG 票据及 Gatekeeper，均通过，Release 资产摘要与本地一致。功能回归覆盖外部打开版本基准、程序选择与加载禁用、推荐图标、仓库移除、Git／搜索、页面状态、偏好及 About。
-- macOS Release 实测类型图标、紧凑列表、Tab 复用、历史搜索、复制反馈、偏好重启恢复、About 居中和动画；外部打开已验证暂存项打开工作区最新内容、删除项通过“其他程序…”打开临时副本，应用图标与键盘菜单正常。原生拖动工具曾报 `noWindowsAvailable`，真实拖动后重启仍未验收；未量化帧耗时。
+- 当前本地分支显示、工具栏配色与浅色代码主题调整通过格式、Clippy、51 项 Rust 测试及 Release 构建；macOS 预览确认顶部分支随 Tab 切换、History 无重复分支标签，并核对浅色默认语法配色与深灰正文的显示；本轮未另做 Windows／Linux 验收。此前 macOS Release 实测类型图标、紧凑列表、Tab 复用、历史搜索、复制反馈、偏好重启恢复、About 居中和动画；外部打开已验证暂存项打开工作区最新内容、删除项通过“其他程序…”打开临时副本，应用图标与键盘菜单正常。原生拖动工具曾报 `noWindowsAvailable`，真实拖动后重启仍未验收；未量化帧耗时。
 - Windows／Linux 已通过云端原生检查、测试、链接与打包，未做实机交互；CI／开发文档包含 GLib 开发依赖，Linux 安装包仍依赖构建系统动态库。
 - 缓存优化时本机 `target` 从 14.45 GiB 降到 5.74 GiB，增量 176.7 MiB；重复构建复用产物。属于当时测量，非当前容量保证；其他平台未测。
 

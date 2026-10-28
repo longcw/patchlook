@@ -355,7 +355,7 @@ impl ChangeTree {
 
     pub fn render(
         &self,
-        branch: String,
+        branch: Option<String>,
         show_stats: bool,
         working: bool,
         on_activate_file: impl Fn(&usize, &mut Window, &mut App) + 'static,
@@ -506,16 +506,21 @@ impl ChangeTree {
                                         ),
                                 )
                             })
-                            .when(entry.is_root(), |row| {
-                                row.child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(branch.clone()),
-                                )
-                            })
+                            .when_some(
+                                branch.as_ref().filter(|_| entry.is_root()),
+                                |row, branch| {
+                                    row.child(
+                                        div()
+                                            .id("tree-branch")
+                                            .test_support()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(branch.clone()),
+                                    )
+                                },
+                            )
                             .when(working && file_index.is_some(), |row| {
                                 row.child(div().flex_1()).child(
                                     div()
@@ -720,8 +725,13 @@ mod tests {
     }
     impl Render for Viewer {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            self.tree
-                .render("main".into(), self.show_stats, false, |_, _, _| {}, cx)
+            self.tree.render(
+                Some("main".into()),
+                self.show_stats,
+                false,
+                |_, _, _| {},
+                cx,
+            )
         }
     }
 

@@ -101,5 +101,7 @@
   "other_application": "其他程式…",
   "select_application": "選擇應用程式",
   "open_file_failed": "無法打開檔案",
-  "applications_failed": "無法取得應用程式列表"
+  "applications_failed": "無法取得應用程式列表",
+  "working_branch_tooltip": "工作區分支：{branch}",
+  "viewed_branch_tooltip": "正在瀏覽：{branch}\n工作區分支：{worktree}"
 }

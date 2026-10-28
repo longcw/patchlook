@@ -16,6 +16,7 @@ use gpui_kit::{
         menu::{DropdownMenu, PopupMenuItem},
         resizable::{h_resizable, resizable_panel, v_resizable},
         scroll::{Scrollbar, ScrollbarMode},
+        tooltip::Tooltip,
         v_flex,
     },
     prelude::FluentBuilder,
@@ -1232,6 +1233,9 @@ impl Patchlook {
         let target = self.external_file_target();
         let app = cx.entity().downgrade();
         icon_button("open-with", IconName::ExternalLink, "open_with")
+            .when(target.is_some(), |button| {
+                button.text_color(cx.theme().muted_foreground)
+            })
             .disabled(target.is_none())
             .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, cx| {
                 let Some(target) = target.clone() else {
@@ -1294,6 +1298,16 @@ impl Patchlook {
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let branch = match self.view.source() {
+            Source::Working => self.branch.clone(),
+            Source::History => self.viewed_branch_name(),
+        };
+        let branch_tooltip = tr(match self.view.source() {
+            Source::Working => "working_branch_tooltip",
+            Source::History => "viewed_branch_tooltip",
+        })
+        .replace("{branch}", &branch)
+        .replace("{worktree}", &self.branch);
         let repository_name = self.repository.as_ref().map(|repo| {
             repo.root
                 .file_name()
@@ -1337,13 +1351,20 @@ impl Patchlook {
                 .when(self.repository.is_some(), |view| {
                     view.child(
                         h_flex()
+                            .id("toolbar-branch")
+                            .test_support()
+                            .role(accesskit::Role::Label)
+                            .aria_label(branch_tooltip.clone())
                             .gap_1()
-                            .max_w(px(160.))
+                            .max_w(px(320.))
                             .min_w_0()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(branch_tooltip.clone()).build(window, cx)
+                            })
                             .child(Icon::new(IconName::GitBranch).xsmall())
-                            .child(div().truncate().child(self.branch.clone())),
+                            .child(div().truncate().child(branch)),
                     )
                 })
                 .child(
@@ -1395,6 +1416,7 @@ impl Patchlook {
                     .child(
                         icon_button("add-repository", IconName::Plus, "open_repository")
                             .xsmall()
+                            .text_color(cx.theme().muted_foreground)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_repository(&OpenRepository, window, cx)
                             })),
@@ -1402,6 +1424,9 @@ impl Patchlook {
                     .child(
                         icon_button("remove-repository", IconName::Minus, "remove_repository")
                             .xsmall()
+                            .when(self.repository.is_some() && !self.loading, |button| {
+                                button.text_color(cx.theme().muted_foreground)
+                            })
                             .disabled(self.repository.is_none() || self.loading)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.remove_repository(window, cx)
@@ -1702,12 +1727,12 @@ impl Patchlook {
             .border_color(cx.theme().border)
             .when(self.view == View::Repositories, |row| {
                 row.child(
-                    icon_button("back-to-files", IconName::ArrowLeft, "back_to_files").on_click(
-                        cx.listener(|this, _, _, cx| {
+                    icon_button("back-to-files", IconName::ArrowLeft, "back_to_files")
+                        .text_color(cx.theme().muted_foreground)
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.repository_preview = false;
                             cx.notify();
-                        }),
-                    ),
+                        })),
                 )
             })
             .when_some(path, |row, path| {
@@ -1961,10 +1986,10 @@ impl Patchlook {
                     .flex_1()
                     .min_h_0()
                     .child(tree.render(
-                        if self.view == View::Working {
-                            self.branch.clone()
-                        } else {
-                            self.viewed_branch_name()
+                        match self.view {
+                            View::Working => Some(self.branch.clone()),
+                            View::Repositories => Some(self.viewed_branch_name()),
+                            View::History => None,
                         },
                         self.preferences.show_file_stats,
                         self.view == View::Working,
@@ -2126,9 +2151,18 @@ impl Patchlook {
                     .text_color(cx.theme().muted_foreground)
                     .child(tr("commits"))
                     .child(self.history.commits.len().to_string())
-                    .child(div().flex_1())
-                    .child(Icon::new(IconName::GitBranch).xsmall())
-                    .child(div().min_w_0().truncate().child(self.viewed_branch_name())),
+                    .when(self.view != View::History, |row| {
+                        row.child(div().flex_1())
+                            .child(Icon::new(IconName::GitBranch).xsmall())
+                            .child(
+                                div()
+                                    .id("history-branch")
+                                    .test_support()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(self.viewed_branch_name()),
+                            )
+                    }),
             )
             .child(
                 div()
@@ -2307,6 +2341,10 @@ impl Patchlook {
             image.clone().into_any_element()
         } else if self.active_files().selected_file.is_some() {
             Diff::new(&self.active_files().diff)
+                .when_some(
+                    cx.theme().highlight_theme.style.editor_foreground,
+                    |diff, color| diff.text_color(color),
+                )
                 .change_indicator(DiffChangeIndicator::Bars)
                 .header_visible(false)
                 .soft_wrap(self.preferences.soft_wrap)
@@ -3060,6 +3098,7 @@ mod tests {
                 cx.new(|cx| {
                     let mut app = test_app(window, cx);
                     app.repository = Some(repo.clone());
+                    app.branches = repo.branches().unwrap();
                     app.preferences.remember_repository(repo.root.clone());
                     app
                 })
@@ -3174,6 +3213,35 @@ mod tests {
             assert_eq!(app.history.commits[0].subject, "Initial");
             assert_eq!(app.history.files.changes.len(), 2);
         });
+        // The title bar follows the visible source while the worktree stays on main.
+        for view in [View::Repositories, View::History, View::Working] {
+            cx.update_window(handle, |_, window, cx| {
+                app.update(cx, |app, cx| {
+                    app.preferences.tree_file_list = true;
+                    app.switch_view(view, cx);
+                });
+                window.render_frame(cx);
+                window.render_frame(cx);
+                let label = if view == View::Working {
+                    tr("working_branch_tooltip").replace("{branch}", "main")
+                } else {
+                    tr("viewed_branch_tooltip")
+                        .replace("{branch}", "older")
+                        .replace("{worktree}", "main")
+                };
+                assert_eq!(window.find("toolbar-branch").label(), Some(label.as_str()));
+                assert_eq!(
+                    window.try_find("tree-branch").is_some(),
+                    view != View::History
+                );
+                assert_eq!(
+                    window.try_find("history-branch").is_some(),
+                    view == View::Repositories
+                );
+            })
+            .unwrap();
+        }
+        assert_eq!(repo.branch_name().unwrap(), "main");
         // An empty search result is a loaded snapshot too, and survives all Tab changes.
         cx.update(|cx| {
             app.update(cx, |app, cx| {
