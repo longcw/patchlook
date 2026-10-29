@@ -76,7 +76,3 @@ cargo run --locked --release
 使用 [Rust](https://www.rust-lang.org/) 和 [GPUI Kit](https://github.com/longbridge/gpui-kit) 构建。
 
 采用 [MIT 开源协议](LICENSE)。
-
-## 友情链接
-
-[LINUX DO](https://linux.do/) 是一个交流技术、分享开源项目的社区。欢迎来这里发现有趣的工具，分享自己的作品和使用心得。

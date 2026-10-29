@@ -76,7 +76,3 @@ See the [development guide](https://github.com/worldtheater/patchlook/blob/main/
 Built with [Rust](https://www.rust-lang.org/) and [GPUI Kit](https://github.com/longbridge/gpui-kit).
 
 Licensed under the [MIT License](LICENSE).
-
-## Friends
-
-[LINUX DO](https://linux.do/) is a community for discussing technology and sharing open-source projects. Drop by to discover useful tools, share your work, and exchange ideas with other developers.
