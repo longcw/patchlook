@@ -1,7 +1,7 @@
 //! Opens repository files in Zed the way the gh-zed helper does: a file link
 //! reuses a window that already holds its project, and otherwise the project
 //! opens first so the file does not land in a window of its own.
-use crate::git::{Repository, remote_location};
+use crate::git::remote_location;
 use anyhow::{Context, Result};
 use std::{
     path::{Path, PathBuf},
@@ -86,12 +86,12 @@ fn open_roots(_: Option<&str>) -> Option<Vec<PathBuf>> {
     None
 }
 
-/// Opens the repository's worktree, or one of its files at a line, in Zed.
+/// Opens a worktree (local, or `ssh://host/path`), or one of its files at a line, in Zed.
 /// Blocks for up to half a minute while a newly opened project connects.
-pub fn open(repo: &Repository, file: Option<(&Path, usize)>) -> Result<()> {
-    let (host, root) = match remote_location(&repo.root) {
+pub fn open(worktree: &Path, file: Option<(&Path, usize)>) -> Result<()> {
+    let (host, root) = match remote_location(worktree) {
         Some((host, root)) => (Some(host), PathBuf::from(root)),
-        None => (None, repo.root.clone()),
+        None => (None, worktree.to_path_buf()),
     };
     let base = host.map_or_else(
         || "zed://file".to_owned(),

@@ -1071,14 +1071,33 @@ impl Patchlook {
         .detach();
     }
 
-    fn open_in_zed(&mut self, file: Option<(PathBuf, usize)>, cx: &mut Context<Self>) {
+    /// Opens Zed in the worktree that has `commit` checked out, or the opened one.
+    fn open_in_zed(
+        &mut self,
+        commit: Option<String>,
+        file: Option<(PathBuf, usize)>,
+        cx: &mut Context<Self>,
+    ) {
         self.open_link(
             move |repo| {
+                let worktree = match &commit {
+                    Some(commit) => repo.worktree_for(commit)?,
+                    None => repo.root.clone(),
+                };
                 let file = file.as_ref().map(|(path, line)| (path.as_path(), *line));
-                zed::open(&repo, file).map(|_| None)
+                zed::open(&worktree, file).map(|_| None)
             },
             cx,
         );
+    }
+
+    /// The commit whose files the diff shows, which picks the worktree to edit them in.
+    fn shown_commit(&self) -> Option<String> {
+        match self.current_comparison() {
+            Comparison::Commit(commit) => Some(commit.id),
+            Comparison::Range { target, .. } => target,
+            Comparison::Working => None,
+        }
     }
 
     /// The selected file at a diff line, for opening in an editor.
@@ -1124,13 +1143,7 @@ impl Patchlook {
                     |this, row, cx| {
                         if let Some(id) = this.row_commit_id(row) {
                             this.open_link(
-                                move |repo| {
-                                    let remotes = github::remotes(&repo)?;
-                                    let remote = remotes.first().ok_or_else(|| {
-                                        anyhow::anyhow!("This repository has no GitHub remote")
-                                    })?;
-                                    Ok(Some(github::commit_url(remote, &id)))
-                                },
+                                move |repo| github::published_commit_url(&repo, &id).map(Some),
                                 cx,
                             );
                         }
@@ -1148,8 +1161,9 @@ impl Patchlook {
         };
         menu.when(id.is_some(), commit_items)
             .item(
-                PopupMenuItem::new(tr("open_in_zed"))
-                    .on_click(action(|this, _, cx| this.open_in_zed(None, cx))),
+                PopupMenuItem::new(tr("open_in_zed")).on_click(action(|this, row, cx| {
+                    this.open_in_zed(this.row_commit_id(row), None, cx)
+                })),
             )
             .item(
                 PopupMenuItem::new(tr("compare_with_selected"))
@@ -3382,7 +3396,7 @@ impl Patchlook {
                                 let _ = click_app.update(cx, |this, cx| {
                                     let target = this.line_target(Some(position));
                                     if target.is_some() {
-                                        this.open_in_zed(target, cx);
+                                        this.open_in_zed(this.shown_commit(), target, cx);
                                     }
                                 });
                             }
@@ -3399,7 +3413,9 @@ impl Patchlook {
                     let open = |target: Option<(PathBuf, usize)>| {
                         let app = app.clone();
                         move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            let _ = app.update(cx, |this, cx| this.open_in_zed(target.clone(), cx));
+                            let _ = app.update(cx, |this, cx| {
+                                this.open_in_zed(this.shown_commit(), target.clone(), cx)
+                            });
                         }
                     };
                     menu.when_some(

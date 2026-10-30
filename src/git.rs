@@ -394,6 +394,38 @@ impl Repository {
         }))
     }
 
+    /// The worktree to edit a commit in: the opened one when its HEAD has the
+    /// commit, else the first whose HEAD does, else the opened one.
+    pub fn worktree_for(&self, sha: &str) -> Result<PathBuf> {
+        let contains = |head: &str| -> Result<bool> {
+            let status = command(&self.root)
+                .args(["merge-base", "--is-ancestor", sha, head])
+                .output()?
+                .status;
+            Ok(status.success())
+        };
+        let worktrees = self.worktrees()?;
+        let mut candidates: Vec<_> = worktrees.iter().collect();
+        candidates.sort_by_key(|worktree| worktree.path != self.root);
+        for worktree in candidates {
+            if !worktree.head.is_empty() && contains(&worktree.head)? {
+                return Ok(worktree.path.clone());
+            }
+        }
+        Ok(self.root.clone())
+    }
+
+    /// Short names of the local and remote branches that contain a commit.
+    pub fn branches_containing(&self, sha: &str) -> Result<Vec<String>> {
+        let text = text(output(
+            command(&self.root)
+                .args(["for-each-ref", "--format=%(refname)", "--contains", sha])
+                .args(["refs/heads", "refs/remotes"]),
+            false,
+        )?)?;
+        Ok(text.lines().map(str::to_owned).collect())
+    }
+
     /// Each remote's name and fetch URL.
     pub fn remote_urls(&self) -> Result<Vec<(String, String)>> {
         let text = text(output(command(&self.root).args(["remote", "-v"]), false)?)?;
@@ -1250,6 +1282,19 @@ mod tests {
         assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
         assert_eq!(worktrees[1].branch.as_deref(), Some("feature"));
         assert_eq!(worktrees[1].path, linked.root);
+
+        // A commit opens in the worktree whose branch has it, preferring the opened one.
+        let base = main.history(0, None).unwrap().commits.remove(0).id;
+        fs::write(linked.root.join("file.txt"), "two\n").unwrap();
+        commit(&linked, "Feature");
+        let feature = linked.history(0, None).unwrap().commits.remove(0).id;
+        assert_eq!(main.worktree_for(&feature).unwrap(), linked.root);
+        assert_eq!(main.worktree_for(&base).unwrap(), main.root);
+        assert_eq!(linked.worktree_for(&base).unwrap(), linked.root);
+        assert_eq!(
+            main.branches_containing(&feature).unwrap(),
+            ["refs/heads/feature"]
+        );
     }
 
     #[test]

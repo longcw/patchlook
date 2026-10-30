@@ -59,28 +59,73 @@ fn gh() -> Command {
     Command::new(found.unwrap_or("gh"))
 }
 
-/// The pull request that brought a commit in, or its commit page when none is found.
+fn gh_api(path: &str, jq: &str) -> Option<String> {
+    let output = gh().args(["api", "--jq", jq, path]).output().ok()?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (output.status.success() && !value.is_empty()).then_some(value)
+}
+
+/// The commit page, once GitHub is known to have the commit.
+pub fn published_commit_url(repo: &Repository, sha: &str) -> Result<String> {
+    let remotes = remotes(repo)?;
+    anyhow::ensure!(!remotes.is_empty(), "This repository has no GitHub remote");
+    remotes
+        .iter()
+        .find(|remote| {
+            let path = format!("repos/{}/{}/commits/{sha}", remote.owner, remote.name);
+            gh_api(&path, ".sha").is_some()
+        })
+        .map(|remote| commit_url(remote, sha))
+        .with_context(|| format!("GitHub has no commit {}; push it first", &sha[..7]))
+}
+
+/// The pull request that brought a commit in. GitHub knows pushed commits by
+/// SHA; an unpushed commit is matched through the branches that contain it.
 pub fn pull_request_url(repo: &Repository, sha: &str) -> Result<String> {
     let remotes = remotes(repo)?;
-    let first = remotes
-        .first()
-        .context("This repository has no GitHub remote")?;
+    anyhow::ensure!(!remotes.is_empty(), "This repository has no GitHub remote");
     for remote in &remotes {
-        let output = gh()
-            .args(["api", "--jq", ".[0].html_url // empty"])
-            .arg(format!(
-                "repos/{}/{}/commits/{sha}/pulls",
-                remote.owner, remote.name
-            ))
-            .output();
-        if let Ok(output) = output {
-            let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if output.status.success() && !url.is_empty() {
-                return Ok(url);
+        let path = format!("repos/{}/{}/commits/{sha}/pulls", remote.owner, remote.name);
+        if let Some(url) = gh_api(&path, ".[0].html_url // empty") {
+            return Ok(url);
+        }
+    }
+    let mut heads: Vec<String> = Vec::new();
+    for reference in repo.branches_containing(sha)? {
+        let head = match reference.strip_prefix("refs/heads/") {
+            Some(branch) => branch,
+            // `origin/x` and `x` name the same pull request head.
+            None => match reference.strip_prefix("refs/remotes/") {
+                Some(remote) => remote.split_once('/').map_or(remote, |(_, branch)| branch),
+                None => continue,
+            },
+        };
+        if head != "HEAD" && !heads.iter().any(|known| known == head) {
+            heads.push(head.to_owned());
+        }
+    }
+    for remote in &remotes {
+        for head in &heads {
+            let output = gh()
+                .args(["pr", "list", "--state", "all", "--limit", "1"])
+                .args(["--json", "url", "--jq", ".[0].url // empty"])
+                .arg("--repo")
+                .arg(format!("{}/{}", remote.owner, remote.name))
+                .arg("--head")
+                .arg(head)
+                .output();
+            if let Ok(output) = output {
+                let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                if output.status.success() && !url.is_empty() {
+                    return Ok(url);
+                }
             }
         }
     }
-    Ok(commit_url(first, sha))
+    anyhow::bail!(
+        "No pull request contains commit {}",
+        &sha[..7.min(sha.len())]
+    )
 }
 
 #[cfg(test)]
