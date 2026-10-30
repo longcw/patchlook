@@ -43,7 +43,6 @@ gpui_kit::actions!(patchlook, [About, OpenRepository, Refresh, Quit]);
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
     Repositories,
-    Working,
     History,
 }
 
@@ -91,22 +90,6 @@ impl PreparedChanges {
             stats,
             preview,
         })
-    }
-}
-
-/// Working changes and commit changes have independent lifetimes, selection and previews.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Source {
-    Working,
-    History,
-}
-
-impl View {
-    fn source(self) -> Source {
-        match self {
-            Self::Working => Source::Working,
-            Self::Repositories | Self::History => Source::History,
-        }
     }
 }
 
@@ -266,7 +249,6 @@ pub struct Patchlook {
     repository_scroll: UniformListScrollHandle,
     branch_scroll: UniformListScrollHandle,
     view: View,
-    working: ChangeState,
     history: HistoryState,
     repository_preview: bool,
     history_search: Entity<InputState>,
@@ -315,7 +297,6 @@ impl Patchlook {
         ];
         let initial = initial.or_else(|| preferences.repository.clone());
         let mut app = Self {
-            working: ChangeState::new(preferences.layout, cx),
             history: HistoryState::new(preferences.layout, cx),
             preferences,
             about: cx.new(crate::about::AboutPanel::new),
@@ -327,7 +308,7 @@ impl Patchlook {
             branches: vec![],
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
-            view: View::Working,
+            view: View::History,
             repository_preview: false,
 
             history_search,
@@ -388,54 +369,28 @@ impl Patchlook {
         .detach();
     }
 
-    fn files_for(&self, source: Source) -> &ChangeState {
-        match source {
-            Source::Working => &self.working,
-            Source::History => &self.history.files,
-        }
-    }
-
-    fn files_for_mut(&mut self, source: Source) -> &mut ChangeState {
-        match source {
-            Source::Working => &mut self.working,
-            Source::History => &mut self.history.files,
-        }
-    }
-
     fn active_files(&self) -> &ChangeState {
-        self.files_for(self.view.source())
+        &self.history.files
     }
 
     fn active_files_mut(&mut self) -> &mut ChangeState {
-        self.files_for_mut(self.view.source())
+        &mut self.history.files
     }
 
     fn current_commit(&self) -> Option<&Commit> {
-        match (
-            self.view.source(),
-            self.history.selected,
-            self.history.compare,
-        ) {
-            (Source::History, Some(Row::Commit(index)), None) => self.history.commits.get(index),
+        match (self.history.selected, self.history.compare) {
+            (Some(Row::Commit(index)), None) => self.history.commits.get(index),
             _ => None,
         }
     }
 
     /// Index/worktree listings label each file by area; commit listings by status.
     fn shows_areas(&self) -> bool {
-        match self.view.source() {
-            Source::Working => true,
-            Source::History => {
-                self.history.selected == Some(Row::Working) && self.history.compare.is_none()
-            }
-        }
+        self.history.selected == Some(Row::Working) && self.history.compare.is_none()
     }
 
     fn current_comparison(&self) -> Comparison {
-        match self.view.source() {
-            Source::Working => Comparison::Working,
-            Source::History => self.history.comparison().unwrap_or(Comparison::Working),
-        }
+        self.history.comparison().unwrap_or(Comparison::Working)
     }
 
     fn visible_error(&self) -> Option<&String> {
@@ -484,13 +439,11 @@ impl Patchlook {
     /// Opening/refreshing a repository replaces its two snapshots. Tab changes never call this.
     fn load_repository(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.load_task = None;
-        self.working.cancel_pending();
         self.history.files.cancel_pending();
         self.history.load_task = None;
         self.history.loading = false;
         self.loading = true;
         self.error = None;
-        let source = self.view.source();
         let preview = self.view != View::Repositories;
         let query = self.history.query.clone();
         let reference = self.preferences.viewed_branch(&path).map(str::to_owned);
@@ -499,36 +452,17 @@ impl Patchlook {
                 .background_spawn(async move {
                     let repo = Repository::open(&path)?;
                     let branches = repo.branches()?;
-                    let (branch, page, changes) = match source {
-                        Source::Working => {
-                            let snapshot = repo.snapshot()?;
-                            (snapshot.branch, None, snapshot.changes)
-                        }
-                        Source::History => {
-                            let branch = repo.branch_name()?;
-                            let page = repo.history_filtered(0, reference.as_deref(), &query)?;
-                            (branch, Some(page), Vec::new())
-                        }
-                    };
-                    let (first, prepared) = match &page {
-                        Some(page) => {
-                            let (first, prepared) =
-                                first_history_row(&repo, page, reference.is_none(), preview)?;
-                            (Some(first), prepared)
-                        }
-                        None => (
-                            None,
-                            PreparedChanges::load(&repo, changes, &Comparison::Working, preview)?,
-                        ),
-                    };
+                    let branch = repo.branch_name()?;
+                    let page = repo.history_filtered(0, reference.as_deref(), &query)?;
+                    let (first, prepared) =
+                        first_history_row(&repo, &page, reference.is_none(), preview)?;
                     anyhow::Ok((repo, branch, branches, page, first, prepared))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((repo, branch, branches, page, first, prepared)) => {
-                        this.working = ChangeState::new(this.preferences.layout, cx);
+                    Ok((repo, branch, branches, page, (working_changes, selected), prepared)) => {
                         let query = std::mem::take(&mut this.history.query);
                         this.history = HistoryState::new(this.preferences.layout, cx);
                         this.history.query = query;
@@ -539,19 +473,15 @@ impl Patchlook {
                         this.branch = branch;
                         this.branches = branches;
                         this.save_preferences();
-                        if let Some(page) = page {
-                            this.history.revision = page.revision;
-                            this.history.commits = page.commits;
-                            this.history.has_more = page.has_more;
-                            this.history.search_available =
-                                this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
-                        }
-                        if let Some((working_changes, selected)) = first {
-                            this.history.working_changes = working_changes;
-                            this.history.selected = selected;
-                            this.history.anchor = selected;
-                        }
-                        this.apply_changes(source, prepared, cx);
+                        this.history.revision = page.revision;
+                        this.history.commits = page.commits;
+                        this.history.has_more = page.has_more;
+                        this.history.search_available =
+                            this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
+                        this.history.working_changes = working_changes;
+                        this.history.selected = selected;
+                        this.history.anchor = selected;
+                        this.apply_changes(prepared, cx);
                     }
                     Err(error) => this.error = Some(format!("{}: {error:#}", tr("load_failed"))),
                 }
@@ -593,7 +523,6 @@ impl Patchlook {
         self.branch.clear();
         self.branches.clear();
         self.branch_scroll = UniformListScrollHandle::new();
-        self.working = ChangeState::new(self.preferences.layout, cx);
         self.history = HistoryState::new(self.preferences.layout, cx);
         self.repository_preview = false;
         self.reset_copy_feedback();
@@ -623,43 +552,12 @@ impl Patchlook {
         if self.repository.is_none() {
             return;
         }
-        match self.view.source() {
-            Source::Working if !self.working.loaded && !self.working.files_loading => {
-                self.load_working(cx);
-            }
-            Source::History if !self.history.files.loaded && !self.history.loading => {
-                let reference = self.viewed_branch().map(str::to_owned);
-                self.load_history_page(HistoryRequest::Branch(reference), cx);
-            }
-            Source::History if self.view == View::History && !self.history.files.files_loading => {
-                self.ensure_history_preview(cx);
-            }
-            _ => {}
+        if !self.history.files.loaded && !self.history.loading {
+            let reference = self.viewed_branch().map(str::to_owned);
+            self.load_history_page(HistoryRequest::Branch(reference), cx);
+        } else if self.view == View::History && !self.history.files.files_loading {
+            self.ensure_history_preview(cx);
         }
-    }
-
-    fn load_working(&mut self, cx: &mut Context<Self>) {
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
-        self.working.files_loading = true;
-        self.working.error = None;
-        self.working.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    let snapshot = repo.snapshot()?;
-                    PreparedChanges::load(&repo, snapshot.changes, &Comparison::Working, true)
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.working.files_loading = false;
-                match result {
-                    Ok(prepared) => this.apply_changes(Source::Working, prepared, cx),
-                    Err(error) => this.working.error = Some(format!("{error:#}")),
-                }
-                cx.notify();
-            });
-        }));
     }
 
     fn ensure_history_preview(&mut self, cx: &mut Context<Self>) {
@@ -667,7 +565,7 @@ impl Patchlook {
             && self.history.files.selected_file.is_none()
             && !self.history.files.changes.is_empty()
         {
-            self.select_source_file(Source::History, 0, cx);
+            self.select_source_file(0, cx);
         }
     }
 
@@ -744,7 +642,7 @@ impl Patchlook {
                             this.history.selected = selected;
                             this.history.anchor = selected;
                             this.history.compare = None;
-                            this.apply_changes(Source::History, prepared, cx);
+                            this.apply_changes(prepared, cx);
                             if this.view == View::History {
                                 this.ensure_history_preview(cx);
                             }
@@ -812,7 +710,7 @@ impl Patchlook {
                         this.repository_preview = false;
                         this.history.selected = Some(selected);
                         this.history.compare = compare;
-                        this.apply_changes(Source::History, prepared, cx);
+                        this.apply_changes(prepared, cx);
                         if this.view == View::History {
                             this.ensure_history_preview(cx);
                         }
@@ -825,7 +723,7 @@ impl Patchlook {
         cx.notify();
     }
 
-    fn apply_changes(&mut self, source: Source, prepared: PreparedChanges, cx: &mut Context<Self>) {
+    fn apply_changes(&mut self, prepared: PreparedChanges, cx: &mut Context<Self>) {
         let mut files = ChangeState::new(self.preferences.layout, cx);
         files.loaded = true;
         files.total_stats = Some(prepared.stats.iter().flatten().copied().sum());
@@ -836,10 +734,7 @@ impl Patchlook {
                 &repo.root,
                 cx,
                 move |this, index, cx| {
-                    // Retained hidden trees must never drive the currently displayed data set.
-                    if this.view.source() == source
-                        && this.files_for(source).selected_file != Some(index)
-                    {
+                    if this.history.files.selected_file != Some(index) {
                         this.select_file(index, cx);
                     }
                 },
@@ -847,24 +742,19 @@ impl Patchlook {
         });
         files.changes = prepared.changes;
         files.file_stats = prepared.stats;
-        *self.files_for_mut(source) = files;
+        self.history.files = files;
         if let Some(preview) = prepared.preview {
-            let files = self.files_for_mut(source);
+            let files = &mut self.history.files;
             files.selected_file = Some(0);
             if let Some(tree) = &files.change_tree {
                 tree.reveal_file(0, cx);
             }
-            self.apply_file_result(source, preview, cx);
+            self.apply_file_result(preview, cx);
         }
     }
 
-    fn apply_file_result(
-        &mut self,
-        source: Source,
-        result: anyhow::Result<FileContent>,
-        cx: &mut Context<Self>,
-    ) {
-        let files = self.files_for_mut(source);
+    fn apply_file_result(&mut self, result: anyhow::Result<FileContent>, cx: &mut Context<Self>) {
+        let files = &mut self.history.files;
         match result {
             Ok(content) => {
                 let (diffs, image) = match content {
@@ -923,27 +813,22 @@ impl Patchlook {
             }
             self.repository_preview = true;
         }
-        self.select_source_file(self.view.source(), index, cx);
+        self.select_source_file(index, cx);
         cx.notify();
     }
 
-    fn select_source_file(&mut self, source: Source, index: usize, cx: &mut Context<Self>) {
-        if self.loading || self.files_for(source).files_loading {
+    fn select_source_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.loading || self.history.files.files_loading {
             return;
         }
-        if self.files_for(source).selected_file == Some(index)
-            && self.files_for(source).error.is_none()
-        {
+        if self.history.files.selected_file == Some(index) && self.history.files.error.is_none() {
             return;
         }
         let Some(repo) = self.repository.clone() else {
             return;
         };
-        let comparison = match source {
-            Source::Working => Comparison::Working,
-            Source::History => self.history.comparison().unwrap_or(Comparison::Working),
-        };
-        let files = self.files_for_mut(source);
+        let comparison = self.current_comparison();
+        let files = &mut self.history.files;
         let change = files.changes[index].clone();
         let now = cx.background_executor().now();
         // Only a burst of selections needs to settle. An isolated selection
@@ -971,8 +856,8 @@ impl Patchlook {
                 .background_spawn(async move { FileContent::load(&repo, &change, &comparison) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.files_for_mut(source).patch_loading = false;
-                this.apply_file_result(source, result, cx);
+                this.history.files.patch_loading = false;
+                this.apply_file_result(result, cx);
                 cx.notify();
             });
         }));
@@ -1041,11 +926,10 @@ impl Patchlook {
 
     fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
         self.preferences.layout = layout;
-        for source in [Source::Working, Source::History] {
-            self.files_for(source)
-                .diff
-                .update(cx, |diff, cx| diff.set_mode(diff_mode(layout), cx));
-        }
+        self.history
+            .files
+            .diff
+            .update(cx, |diff, cx| diff.set_mode(diff_mode(layout), cx));
         self.save_preferences();
         cx.notify();
     }
@@ -1305,11 +1189,7 @@ impl Patchlook {
 
     fn external_file_target(&self) -> Option<FileToOpen> {
         let files = self.active_files();
-        if self.loading
-            || files.files_loading
-            || files.patch_loading
-            || (self.view.source() == Source::History && self.history.loading)
-        {
+        if self.loading || files.files_loading || files.patch_loading || self.history.loading {
             return None;
         }
         Some(FileToOpen {
@@ -1433,16 +1313,10 @@ impl Patchlook {
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let branch = match self.view.source() {
-            Source::Working => self.branch.clone(),
-            Source::History => self.viewed_branch_name(),
-        };
-        let branch_tooltip = tr(match self.view.source() {
-            Source::Working => "working_branch_tooltip",
-            Source::History => "viewed_branch_tooltip",
-        })
-        .replace("{branch}", &branch)
-        .replace("{worktree}", &self.branch);
+        let branch = self.viewed_branch_name();
+        let branch_tooltip = tr("viewed_branch_tooltip")
+            .replace("{branch}", &branch)
+            .replace("{worktree}", &self.branch);
         let repository_name = self.repository.as_ref().map(|repo| {
             repo.root
                 .file_name()
@@ -1807,7 +1681,6 @@ impl Patchlook {
             .children(
                 [
                     (View::Repositories, "repositories"),
-                    (View::Working, "working_tree"),
                     (View::History, "history"),
                 ]
                 .map(|(view, key)| {
@@ -2132,7 +2005,6 @@ impl Patchlook {
                     .min_h_0()
                     .child(tree.render(
                         match self.view {
-                            View::Working => Some(self.branch.clone()),
                             View::Repositories => Some(self.viewed_branch_name()),
                             View::History => None,
                         },
@@ -2510,9 +2382,7 @@ impl Patchlook {
     }
 
     fn detail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let content = if (self.loading
-            || self.active_files().files_loading
-            || (self.view != View::Working && self.history.loading))
+        let content = if (self.loading || self.active_files().files_loading || self.history.loading)
             && !self.active_files().loaded
         {
             self.message("loading", None, cx)
@@ -2547,9 +2417,7 @@ impl Patchlook {
                 .hunk_separator(DiffHunkSeparator::Wave)
                 .size_full()
                 .into_any_element()
-        } else if self.view == View::Working && self.active_files().changes.is_empty() {
-            self.message("clean_title", Some("clean_body"), cx)
-        } else if self.view != View::Working && self.history.commits.is_empty() {
+        } else if self.history.row_count() == 0 {
             if self.history.query.is_empty() {
                 self.message("no_commits_title", Some("no_commits_body"), cx)
             } else {
@@ -2733,13 +2601,11 @@ impl Render for Patchlook {
                             .child(self.branch_list(cx)),
                     )
                     .into_any_element()
-            } else if self.view == View::History {
+            } else {
                 v_resizable("history-sidebar")
                     .child(resizable_panel().size(px(350.)).child(self.history(cx)))
                     .child(resizable_panel().overflow_hidden().child(self.files(cx)))
                     .into_any_element()
-            } else {
-                self.files(cx)
             };
             let detail = if self.view == View::Repositories {
                 h_resizable("repository-history")
@@ -2904,7 +2770,6 @@ mod tests {
 
     fn test_app(window: &mut Window, cx: &mut Context<Patchlook>) -> Patchlook {
         Patchlook {
-            working: ChangeState::new(Layout::Split, cx),
             history: HistoryState::new(Layout::Split, cx),
             preferences: Preferences::default(),
             about: cx.new(crate::about::AboutPanel::new),
@@ -2915,7 +2780,7 @@ mod tests {
             branches: vec![],
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
-            view: View::Working,
+            view: View::History,
             repository_preview: false,
 
             history_search: cx.new(|cx| InputState::new(window, cx)),
@@ -2948,8 +2813,8 @@ mod tests {
                     app.repository = Some(Repository {
                         root: directory.path().into(),
                     });
-                    app.working.loaded = true;
-                    app.working.changes = names
+                    app.history.files.loaded = true;
+                    app.history.files.changes = names
                         .into_iter()
                         .map(|path| Change {
                             path: path.into(),
@@ -2969,7 +2834,7 @@ mod tests {
         };
         let verify = |path: &str, loading: bool, cx: &mut TestAppContext| {
             cx.update(|cx| {
-                let files = &app.read(cx).working;
+                let files = &app.read(cx).history.files;
                 assert_eq!(files.patch_loading, loading);
                 assert_eq!(files.diff.read(cx).files()[0].path().as_str(), path);
             });
@@ -3121,7 +2986,8 @@ mod tests {
             let app = app.read(cx);
             assert!(!app.loading);
             assert!(
-                app.working
+                app.history
+                    .files
                     .changes
                     .iter()
                     .any(|change| change.path == std::path::Path::new("refresh.txt"))
@@ -3499,7 +3365,7 @@ mod tests {
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
             app.update(cx, |app, cx| {
-                assert!(!app.working.changes.is_empty());
+                assert!(!app.history.files.changes.is_empty());
                 app.switch_view(View::Repositories, cx);
             });
             window.render_frame(cx);
@@ -3534,7 +3400,7 @@ mod tests {
                 window.render_frame(cx);
                 let state = app.read(cx);
                 assert!(state.repository.is_none());
-                assert!(state.working.changes.is_empty());
+                assert!(state.history.files.changes.is_empty());
                 assert!(state.history.commits.is_empty());
                 assert!(state.history.query.is_empty());
                 assert!(state.history_search.read(cx).value().is_empty());
@@ -3663,7 +3529,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn tabs_retain_snapshots_and_route_pending_results_to_their_owner(cx: &mut TestAppContext) {
+    fn tabs_retain_snapshots_without_rereading_git(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -3689,28 +3555,13 @@ mod tests {
             })
             .unwrap()
         });
-        // Start both independent loads and leave History hidden before either finishes.
+        // Load while Repos is visible, then reveal History before the load finishes.
         cx.update(|cx| {
             app.update(cx, |app, cx| {
-                app.ensure_view_loaded(cx);
                 app.switch_view(View::Repositories, cx);
-                app.switch_view(View::Working, cx);
-                assert!(app.working.files_loading && app.history.loading);
-            })
-        });
-        cx.run_until_parked();
-        cx.update(|cx| {
-            app.update(cx, |app, cx| {
-                assert!(app.working.loaded && app.history.files.loaded);
-                assert_eq!(app.working.changes[0].path, PathBuf::from("alpha.rs"));
-                // A dirty working tree is the first history row and opens selected.
-                assert_eq!(app.history.selected, Some(Row::Working));
-                assert_eq!(app.history.files.changes[0].path, PathBuf::from("alpha.rs"));
-                assert_eq!(app.history.files.selected_file, None);
-                assert_eq!(app.history.commits.len(), 2);
+                app.ensure_view_loaded(cx);
                 app.switch_view(View::History, cx);
-                assert!(app.history.files.patch_loading);
-                app.switch_view(View::Working, cx);
+                assert!(app.history.loading);
             })
         });
         cx.run_until_parked();
@@ -3718,10 +3569,10 @@ mod tests {
         cx.run_until_parked();
         cx.update(|cx| {
             let app = app.read(cx);
-            assert_eq!(
-                app.working.diff.read(cx).files()[0].path().as_str(),
-                "alpha.rs"
-            );
+            // A dirty working tree is the first history row and opens selected.
+            assert_eq!(app.history.selected, Some(Row::Working));
+            assert_eq!(app.history.commits.len(), 2);
+            assert_eq!(app.history.files.changes[0].path, PathBuf::from("alpha.rs"));
             assert_eq!(
                 app.history.files.diff.read(cx).files()[0].path().as_str(),
                 "alpha.rs"
@@ -3730,22 +3581,14 @@ mod tests {
         });
         // No Git reads are possible now: revisiting loaded Tabs must still work.
         std::fs::rename(root.join(".git"), root.join("git-hidden")).unwrap();
-        let (working_diff, history_diff, revision) = cx.update(|cx| {
+        let (history_diff, revision) = cx.update(|cx| {
             let app = app.read(cx);
             (
-                app.working.diff.entity_id(),
                 app.history.files.diff.entity_id(),
                 app.history.revision.clone(),
             )
         });
-        for target in [
-            View::History,
-            View::Repositories,
-            View::Working,
-            View::Repositories,
-            View::History,
-            View::Working,
-        ] {
+        for target in [View::Repositories, View::History, View::Repositories] {
             cx.update_window(handle, |_, window, cx| {
                 app.update(cx, |app, cx| app.switch_view(target, cx));
                 window.render_frame(cx);
@@ -3754,20 +3597,16 @@ mod tests {
             cx.run_until_parked();
             cx.update(|cx| {
                 let app = app.read(cx);
-                assert!(!app.loading && !app.history.loading && !app.working.files_loading);
+                assert!(!app.loading && !app.history.loading && !app.history.files.files_loading);
                 assert!(app.visible_error().is_none());
-                assert_eq!(app.working.diff.entity_id(), working_diff);
                 assert_eq!(app.history.files.diff.entity_id(), history_diff);
                 assert_eq!(app.history.revision, revision);
                 assert_eq!(app.history.selected, Some(Row::Working));
-                assert_eq!(app.working.selected_file, Some(0));
                 assert_eq!(app.history.files.selected_file, Some(0));
             });
         }
         // Reopening the selected file in Repos reuses the preview, including its identity.
         cx.update_window(handle, |_, window, cx| {
-            app.update(cx, |app, cx| app.switch_view(View::Repositories, cx));
-            window.render_frame(cx);
             window.render_frame(cx);
             window.click("tree-file-0", cx);
             window.render_frame(cx);
@@ -3781,26 +3620,26 @@ mod tests {
         })
         .unwrap();
         std::fs::rename(root.join("git-hidden"), root.join(".git")).unwrap();
-        // Changing a browsing branch must not discard or reread working changes.
+        // Another branch keeps the working-tree row but opens on its newest commit.
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 // Set the saved choice in memory so the test never writes real preferences.
                 app.preferences
                     .set_viewed_branch(&repo.root, Some("refs/heads/older".into()));
                 app.load_history_page(HistoryRequest::Branch(Some("refs/heads/older".into())), cx);
-                app.switch_view(View::Working, cx);
             })
         });
         cx.run_until_parked();
         cx.update(|cx| {
             let app = app.read(cx);
-            assert_eq!(app.working.diff.entity_id(), working_diff);
+            assert!(app.history.working_changes);
+            assert_eq!(app.history.selected, Some(Row::Commit(0)));
             assert_eq!(app.history.commits.len(), 1);
             assert_eq!(app.history.commits[0].subject, "Initial");
             assert_eq!(app.history.files.changes.len(), 2);
         });
-        // The title bar follows the visible source while the worktree stays on main.
-        for view in [View::Repositories, View::History, View::Working] {
+        // The title bar names the viewed branch while the worktree stays on main.
+        for view in [View::Repositories, View::History] {
             cx.update_window(handle, |_, window, cx| {
                 app.update(cx, |app, cx| {
                     app.preferences.tree_file_list = true;
@@ -3808,17 +3647,13 @@ mod tests {
                 });
                 window.render_frame(cx);
                 window.render_frame(cx);
-                let label = if view == View::Working {
-                    tr("working_branch_tooltip").replace("{branch}", "main")
-                } else {
-                    tr("viewed_branch_tooltip")
-                        .replace("{branch}", "older")
-                        .replace("{worktree}", "main")
-                };
+                let label = tr("viewed_branch_tooltip")
+                    .replace("{branch}", "older")
+                    .replace("{worktree}", "main");
                 assert_eq!(window.find("toolbar-branch").label(), Some(label.as_str()));
                 assert_eq!(
                     window.try_find("tree-branch").is_some(),
-                    view != View::History
+                    view == View::Repositories
                 );
                 assert_eq!(
                     window.try_find("history-branch").is_some(),
@@ -3841,12 +3676,7 @@ mod tests {
             app.update(cx, |app, cx| {
                 assert!(app.history.files.loaded);
                 assert!(app.history.commits.is_empty());
-                for view in [
-                    View::Repositories,
-                    View::History,
-                    View::Working,
-                    View::History,
-                ] {
+                for view in [View::Repositories, View::History, View::Repositories] {
                     app.switch_view(view, cx);
                     assert!(!app.history.loading);
                 }
@@ -3897,7 +3727,6 @@ mod tests {
                         app.history.commits = vec![commit.clone()];
                         app.history.selected = Some(Row::Commit(0));
                         app.apply_changes(
-                            Source::History,
                             PreparedChanges {
                                 changes,
                                 stats,
@@ -3906,7 +3735,7 @@ mod tests {
                             cx,
                         );
                         app.history.files.selected_file = Some(previous);
-                        app.apply_file_result(Source::History, Ok(content), cx);
+                        app.apply_file_result(Ok(content), cx);
                         app
                     })
                 })
@@ -3999,8 +3828,8 @@ mod tests {
                 cx.new(|cx| {
                     let mut app = test_app(window, cx);
                     app.repository = Some(Repository { root });
-                    app.working.loaded = true;
-                    app.working.changes = ["current.rs", "next.rs"]
+                    app.history.files.loaded = true;
+                    app.history.files.changes = ["current.rs", "next.rs"]
                         .map(|path| Change {
                             path: path.into(),
                             previous_path: None,
@@ -4008,8 +3837,8 @@ mod tests {
                             area: Area::Untracked,
                         })
                         .to_vec();
-                    app.working.selected_file = Some(0);
-                    app.working.diff.update(cx, |diff, cx| {
+                    app.history.files.selected_file = Some(0);
+                    app.history.files.diff.update(cx, |diff, cx| {
                         diff.set_files(
                             DiffFile::parse(
                                 "--- /dev/null\n+++ b/current.rs\n@@ -0,0 +1 @@\n+CURRENT\n",
@@ -4366,9 +4195,9 @@ mod tests {
                     true,
                 )
                 .unwrap();
-                app.apply_changes(Source::Working, prepared, cx);
+                app.apply_changes(prepared, cx);
             });
-            for view in [View::History, View::Working] {
+            for view in [View::History] {
                 app.update(cx, |app, cx| {
                     app.view = view;
                     app.preferences.show_file_stats = false;
@@ -4441,10 +4270,8 @@ mod tests {
             assert_eq!(app.read(cx).history.files.diff.entity_id(), diff);
             assert_eq!(app.read(cx).history.selected, selected);
             assert!(!app.read(cx).history.files.patch_loading);
-            app.update(cx, |app, cx| app.switch_view(View::Working, cx));
+            app.update(cx, |app, cx| app.switch_view(View::History, cx));
             window.render_frame(cx);
-            assert!(window.try_find("toggle-commit-message").is_none());
-            assert!(window.try_find("commit-message").is_none());
             window.click("soft-wrap", cx);
             window.render_frame(cx);
             let saved: Preferences = serde_json::from_slice(
@@ -4642,33 +4469,19 @@ mod tests {
             assert!((repository_sidebar_ratio(window) - 0.35).abs() < 0.01);
         })
         .unwrap();
-        // Tab switches retain separate snapshots, and Repos/History share the same one.
-        let (working_diff, history_diff, commit) = cx.update(|cx| {
+        // Repos and History share one retained snapshot across Tab switches.
+        let (history_diff, commit) = cx.update(|cx| {
             let app = app.read(cx);
-            (
-                app.working.diff.entity_id(),
-                app.history.files.diff.entity_id(),
-                app.history.selected,
-            )
+            (app.history.files.diff.entity_id(), app.history.selected)
         });
-        for target in [
-            View::Working,
-            View::History,
-            View::Repositories,
-            View::History,
-            View::Working,
-        ] {
+        for target in [View::History, View::Repositories, View::History] {
             cx.update_window(handle, |_, window, cx| {
                 app.update(cx, |app, cx| app.switch_view(target, cx));
                 window.render_frame(cx);
                 let app = app.read(cx);
                 assert!(!app.loading);
-                assert_eq!(app.working.diff.entity_id(), working_diff);
                 assert_eq!(app.history.files.diff.entity_id(), history_diff);
                 assert_eq!(app.history.selected, commit);
-                if target == View::Working {
-                    assert!(window.try_find("commit-message").is_none());
-                }
             })
             .unwrap();
         }
