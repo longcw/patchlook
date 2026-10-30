@@ -123,7 +123,7 @@ Check the existing submission before rerunning a failed release. An `Accepted` r
 
 ## GPUI Kit patches
 
-Patchlook uses the [GPUI Kit fork](https://github.com/worldtheater/gpui-kit/tree/codex/diff-tool-patches), on the `codex/diff-tool-patches` branch. [Cargo.toml](../Cargo.toml) pins its Git revision through `[patch.crates-io]`; [Cargo.lock](../Cargo.lock) is checked in. Cargo fetches the source automatically, so normal builds need neither a submodule nor a sibling checkout.
+Patchlook uses the [GPUI Kit fork](https://github.com/longcw/gpui-kit/tree/longc/patchlook), on the `longc/patchlook` branch, which adds diff search highlights, overview data and a draggable split on top of [worldtheater/gpui-kit](https://github.com/worldtheater/gpui-kit/tree/codex/diff-tool-patches). [Cargo.toml](../Cargo.toml) pins its Git revision through `[patch.crates-io]`; [Cargo.lock](../Cargo.lock) is checked in. Cargo fetches the source automatically, so normal builds need neither a submodule nor a sibling checkout.
 
 The patch series starts from the GPUI Kit 0.8.0 source commit `1676826d9d49b90f4d7b6808b69924f58796f6f1`. Its current tip is `a3080ee72d0a968cfbb07c5be6b10a6d0df687c7`.
 
