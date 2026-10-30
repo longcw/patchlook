@@ -3000,10 +3000,6 @@ impl Patchlook {
             .when_some(self.active_files().image.as_ref(), |row, image| {
                 row.child(ImageDiff::toolbar(image, cx))
             })
-            .when(self.current_commit().is_some(), |row| {
-                row.child(toolbar_divider(cx))
-                    .child(self.commit_message_button(cx))
-            })
     }
 
     fn files(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3727,9 +3723,13 @@ impl Patchlook {
                     .overflow_hidden()
                     .child(content),
             )
+            // The message belongs to a commit's file list, not to a file's diff.
             .when_some(
-                self.current_commit()
-                    .filter(|_| self.preferences.show_commit_message),
+                self.current_commit().filter(|_| {
+                    self.preferences.show_commit_message
+                        && self.view == View::Repositories
+                        && !self.repository_preview
+                }),
                 |view, commit| {
                     view.child(
                         v_flex()
@@ -5860,12 +5860,16 @@ mod tests {
             }
         })
         .unwrap();
-        // The footer toggle is available in both history layouts and keeps parsed content intact.
+        // A diff shows no commit message; the Repos file list toggles it and keeps content intact.
         cx.update_window(handle, |_, window, cx| {
             app.update(cx, |app, cx| app.switch_view(View::History, cx));
             window.render_frame(cx);
             let diff = app.read(cx).history.files.diff.entity_id();
             let selected = app.read(cx).history.selected;
+            assert!(window.try_find("toggle-commit-message").is_none());
+            assert!(window.try_find("commit-message").is_none());
+            app.update(cx, |app, cx| app.switch_view(View::Repositories, cx));
+            window.render_frame(cx);
             assert!(window.find("toggle-commit-message").checked().unwrap());
             assert!(window.try_find("commit-message").is_some());
             window.click("toggle-commit-message", cx);
@@ -5883,9 +5887,6 @@ mod tests {
             )
             .unwrap();
             assert!(!saved.show_commit_message);
-            app.update(cx, |app, cx| app.switch_view(View::Repositories, cx));
-            window.render_frame(cx);
-            assert!(window.try_find("commit-message").is_none());
             window.click("toggle-commit-message", cx);
             window.render_frame(cx);
             assert!(window.try_find("commit-message").is_some());
