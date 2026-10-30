@@ -1078,10 +1078,11 @@ impl Patchlook {
         file: Option<(PathBuf, usize)>,
         cx: &mut Context<Self>,
     ) {
+        let worktrees = self.worktrees.clone();
         self.open_link(
             move |repo| {
                 let worktree = match &commit {
-                    Some(commit) => repo.worktree_for(commit)?,
+                    Some(commit) => repo.worktree_for(commit, &worktrees)?,
                     None => repo.root.clone(),
                 };
                 let file = file.as_ref().map(|(path, line)| (path.as_path(), *line));

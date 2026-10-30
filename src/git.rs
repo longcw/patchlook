@@ -394,25 +394,47 @@ impl Repository {
         }))
     }
 
-    /// The worktree to edit a commit in: the opened one when its HEAD has the
-    /// commit, else the first whose HEAD does, else the opened one.
-    pub fn worktree_for(&self, sha: &str) -> Result<PathBuf> {
-        let contains = |head: &str| -> Result<bool> {
-            let status = command(&self.root)
-                .args(["merge-base", "--is-ancestor", sha, head])
-                .output()?
-                .status;
-            Ok(status.success())
+    /// The worktree to edit a commit in: the opened one when its branch has the
+    /// commit, else the first whose branch does, else the opened one. One Git
+    /// call serves any number of worktrees, which matters over SSH.
+    pub fn worktree_for(&self, sha: &str, worktrees: &[Worktree]) -> Result<PathBuf> {
+        let containing = self.branches_containing(sha)?;
+        let has = |worktree: &&Worktree| {
+            worktree.branch.as_ref().is_some_and(|branch| {
+                containing
+                    .iter()
+                    .any(|reference| reference.strip_prefix("refs/heads/") == Some(branch.as_str()))
+            })
         };
-        let worktrees = self.worktrees()?;
         let mut candidates: Vec<_> = worktrees.iter().collect();
         candidates.sort_by_key(|worktree| worktree.path != self.root);
-        for worktree in candidates {
-            if !worktree.head.is_empty() && contains(&worktree.head)? {
-                return Ok(worktree.path.clone());
+        Ok(candidates
+            .into_iter()
+            .find(has)
+            .map_or_else(|| self.root.clone(), |worktree| worktree.path.clone()))
+    }
+
+    /// Runs a program on the repository's host: locally, or over SSH with a
+    /// PATH that reaches Homebrew, since non-interactive SSH shells lack it.
+    pub fn host_command(&self, program: &str) -> GitCommand {
+        match remote_location(&self.root) {
+            Some((host, _)) => {
+                let mut command = ssh(host);
+                command.args([
+                    "env",
+                    "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                    program,
+                ]);
+                GitCommand {
+                    command,
+                    remote: true,
+                }
             }
+            None => GitCommand {
+                command: Command::new(program),
+                remote: false,
+            },
         }
-        Ok(self.root.clone())
     }
 
     /// Short names of the local and remote branches that contain a commit.
@@ -1288,9 +1310,12 @@ mod tests {
         fs::write(linked.root.join("file.txt"), "two\n").unwrap();
         commit(&linked, "Feature");
         let feature = linked.history(0, None).unwrap().commits.remove(0).id;
-        assert_eq!(main.worktree_for(&feature).unwrap(), linked.root);
-        assert_eq!(main.worktree_for(&base).unwrap(), main.root);
-        assert_eq!(linked.worktree_for(&base).unwrap(), linked.root);
+        assert_eq!(
+            main.worktree_for(&feature, &worktrees).unwrap(),
+            linked.root
+        );
+        assert_eq!(main.worktree_for(&base, &worktrees).unwrap(), main.root);
+        assert_eq!(linked.worktree_for(&base, &worktrees).unwrap(), linked.root);
         assert_eq!(
             main.branches_containing(&feature).unwrap(),
             ["refs/heads/feature"]
