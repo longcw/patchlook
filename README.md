@@ -22,6 +22,8 @@ Inspect local changes, explore commit history, and compare file versions without
 
 - **Review changes** — inspect staged, unstaged, and untracked files, with added and deleted line counts.
 - **Explore history** — browse branches and commits, or search the full branch history by message or SHA prefix. Uncommitted changes appear as the first history row.
+- **Commit graph** — history draws branch lanes and merges, labels commits with their branches and tags, and dims commits a branch inherited from the default branch, marking where it forked.
+- **Worktrees** — a repository's linked worktrees share one Recent entry named after the repository; switch between them from the title bar.
 - **Remote repositories** — open `host:/path` or `host:~/path` from the globe button in **Repos** to browse a repository over SSH, like VS Code Remote. Uses your `~/.ssh/config` and key authentication; one shared connection serves every Git call.
 - **Compare any two points** — click a row, then Ctrl/⌘-click another to diff any two commits, or a commit against the working tree.
 - **Compare code** — switch between side-by-side and inline diffs, with syntax highlighting and changes highlighted within each line.

@@ -106,5 +106,6 @@
   "open_remote": "Abrir repositorio por SSH",
   "remote_placeholder": "host:/ruta/al/repo",
   "remote_invalid": "Introduce un remoto como host:/ruta o host:~/ruta",
-  "switch_worktree": "Cambiar árbol de trabajo"
+  "switch_worktree": "Cambiar árbol de trabajo",
+  "fork_point": "Bifurcado de {branch}"
 }

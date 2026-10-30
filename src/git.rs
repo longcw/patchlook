@@ -97,6 +97,34 @@ pub struct Commit {
     pub subject: String,
     pub body: String,
     pub parents: Vec<String>,
+    /// Branches and tags pointing at this commit.
+    pub refs: Vec<RefLabel>,
+}
+
+/// Ordered as labels are shown: the checked-out branch first, tags last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RefKind {
+    /// The branch checked out in the opened worktree.
+    Head,
+    Local,
+    Remote,
+    Tag,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefLabel {
+    pub name: String,
+    pub kind: RefKind,
+}
+
+/// Commits the viewed branch has that the default branch lacks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BranchScope {
+    /// The default branch's short name, such as `origin/main`.
+    pub base: String,
+    pub own: std::collections::HashSet<String>,
+    /// Where the branch left the default branch.
+    pub fork: Option<String>,
 }
 
 /// The two sides a file list compares.
@@ -310,6 +338,60 @@ impl Repository {
         Ok(repo)
     }
 
+    /// The default branch: the remote's HEAD when known, else a main or master branch.
+    fn default_branch(&self) -> Result<Option<String>> {
+        let head = command(&self.root)
+            .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+            .output()?;
+        if head.status.success() {
+            return Ok(Some(text(head.stdout)?.trim().to_owned()));
+        }
+        for candidate in [
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/master",
+            "refs/heads/main",
+            "refs/heads/master",
+        ] {
+            let found = command(&self.root)
+                .args(["show-ref", "--verify", "--quiet", candidate])
+                .output()?;
+            if found.status.success() {
+                return Ok(Some(candidate.to_owned()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Splits a branch tip's history into its own commits and the default branch's.
+    pub fn branch_scope(&self, tip: &str) -> Result<Option<BranchScope>> {
+        let Some(base) = self.default_branch()? else {
+            return Ok(None);
+        };
+        let own = text(output(
+            command(&self.root)
+                .args(["rev-list", "--max-count=2000"])
+                .arg(format!("{base}..{tip}")),
+            false,
+        )?)?;
+        let own: std::collections::HashSet<_> = own.lines().map(str::to_owned).collect();
+        if own.is_empty() {
+            return Ok(None);
+        }
+        let fork = text(output(
+            command(&self.root).args(["merge-base", &base, tip]),
+            true,
+        )?)?;
+        let short = base
+            .strip_prefix("refs/remotes/")
+            .or_else(|| base.strip_prefix("refs/heads/"))
+            .unwrap_or(&base);
+        Ok(Some(BranchScope {
+            base: short.to_owned(),
+            own,
+            fork: Some(fork.trim().to_owned()).filter(|fork| !fork.is_empty()),
+        }))
+    }
+
     /// Every worktree of the repository, the main one first.
     pub fn worktrees(&self) -> Result<Vec<Worktree>> {
         let text = text(output(
@@ -460,7 +542,9 @@ impl Repository {
             "log",
             "-z",
             "--date=short",
-            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%P%x00%b",
+            "--topo-order",
+            "--decorate=full",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%P%x00%D%x00%b",
         ]);
         if query.is_empty() {
             cmd.arg(format!("--max-count={}", HISTORY_PAGE_SIZE + 1))
@@ -866,8 +950,8 @@ fn read_history_matches(
     let mut commits = Vec::new();
     let mut matched = 0;
     loop {
-        let mut fields = Vec::with_capacity(7);
-        for index in 0..7 {
+        let mut fields = Vec::with_capacity(8);
+        for index in 0..8 {
             let mut field = Vec::new();
             if reader.read_until(0, &mut field)? == 0 {
                 ensure!(index == 0, "Incomplete Git history record");
@@ -883,7 +967,8 @@ fn read_history_matches(
             date: fields[3].clone(),
             subject: fields[4].clone(),
             parents: fields[5].split_whitespace().map(str::to_owned).collect(),
-            body: fields[6].trim_end().to_owned(),
+            refs: parse_decorations(&fields[6]),
+            body: fields[7].trim_end().to_owned(),
         };
         if !query.is_empty()
             && !commit.id.starts_with(query)
@@ -900,6 +985,37 @@ fn read_history_matches(
             return Ok(commits);
         }
     }
+}
+
+/// Reads `%D` with full names: `HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1`.
+fn parse_decorations(field: &str) -> Vec<RefLabel> {
+    let mut labels: Vec<_> = field
+        .split(", ")
+        .filter_map(|decoration| {
+            let (decoration, head) = match decoration.strip_prefix("HEAD -> ") {
+                Some(branch) => (branch, true),
+                None => (decoration, false),
+            };
+            let decoration = decoration.strip_prefix("tag: ").unwrap_or(decoration);
+            let (kind, name) = if let Some(name) = decoration.strip_prefix("refs/heads/") {
+                (if head { RefKind::Head } else { RefKind::Local }, name)
+            } else if let Some(name) = decoration.strip_prefix("refs/remotes/") {
+                // A remote's HEAD alias duplicates the branch it points at.
+                if name.ends_with("/HEAD") {
+                    return None;
+                }
+                (RefKind::Remote, name)
+            } else {
+                (RefKind::Tag, decoration.strip_prefix("refs/tags/")?)
+            };
+            Some(RefLabel {
+                name: name.to_owned(),
+                kind,
+            })
+        })
+        .collect();
+    labels.sort_by_key(|label| label.kind);
+    labels
 }
 
 fn parse_status(bytes: &[u8]) -> Result<Vec<Change>> {
@@ -1002,6 +1118,42 @@ mod tests {
             directory
         });
         Box::leak(directory.path().join("ssh").into_boxed_path())
+    }
+
+    #[test]
+    fn history_labels_refs_and_separates_a_branch_from_its_base() {
+        let (_temp, repo) = fixture();
+        for message in ["Base", "Fork"] {
+            fs::write(repo.root.join("file.txt"), message).unwrap();
+            commit(&repo, message);
+        }
+        run(&repo.root, &["tag", "v1"]);
+        run(&repo.root, &["switch", "-q", "-c", "feature"]);
+        for message in ["One", "Two"] {
+            fs::write(repo.root.join("file.txt"), message).unwrap();
+            commit(&repo, message);
+        }
+        let commits = repo.history(0, None).unwrap().commits;
+        let label = |name: &str, kind| RefLabel {
+            name: name.into(),
+            kind,
+        };
+        assert_eq!(commits[0].refs, [label("feature", RefKind::Head)]);
+        assert_eq!(
+            commits[2].refs,
+            [label("main", RefKind::Local), label("v1", RefKind::Tag)]
+        );
+
+        let scope = repo.branch_scope(&commits[0].id).unwrap().unwrap();
+        assert_eq!(scope.base, "main");
+        assert_eq!(scope.fork.as_deref(), Some(commits[2].id.as_str()));
+        let own: std::collections::HashSet<_> = commits[..2]
+            .iter()
+            .map(|commit| commit.id.clone())
+            .collect();
+        assert_eq!(scope.own, own);
+        // The default branch itself has nothing of its own.
+        assert_eq!(repo.branch_scope(&commits[2].id).unwrap(), None);
     }
 
     #[test]

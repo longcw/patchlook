@@ -106,5 +106,6 @@
   "open_remote": "SSH でリポジトリを開く",
   "remote_placeholder": "host:/path/to/repo",
   "remote_invalid": "リモートは host:/パス または host:~/パス の形式で入力してください",
-  "switch_worktree": "ワークツリーを切り替え"
+  "switch_worktree": "ワークツリーを切り替え",
+  "fork_point": "{branch} から分岐"
 }

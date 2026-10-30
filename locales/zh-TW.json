@@ -106,5 +106,6 @@
   "open_remote": "透過 SSH 開啟儲存庫",
   "remote_placeholder": "host:/儲存庫/路徑",
   "remote_invalid": "請輸入 host:/路徑 或 host:~/路徑 格式的遠端位址",
-  "switch_worktree": "切換工作樹"
+  "switch_worktree": "切換工作樹",
+  "fork_point": "從 {branch} 分出"
 }

@@ -106,5 +106,6 @@
   "open_remote": "Ouvrir un dépôt via SSH",
   "remote_placeholder": "hôte:/chemin/du/dépôt",
   "remote_invalid": "Saisissez un distant sous la forme hôte:/chemin ou hôte:~/chemin",
-  "switch_worktree": "Changer d'arbre de travail"
+  "switch_worktree": "Changer d'arbre de travail",
+  "fork_point": "Dérivé de {branch}"
 }

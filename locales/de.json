@@ -106,5 +106,6 @@
   "open_remote": "Repository über SSH öffnen",
   "remote_placeholder": "host:/pfad/zum/repo",
   "remote_invalid": "Remote als host:/pfad oder host:~/pfad eingeben",
-  "switch_worktree": "Worktree wechseln"
+  "switch_worktree": "Worktree wechseln",
+  "fork_point": "Abgezweigt von {branch}"
 }

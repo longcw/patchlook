@@ -25,9 +25,10 @@ use gpui_kit::{
 use patchlook::{
     external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
     git::{
-        Branch, Change, Commit, Comparison, DiffStats, HistoryPage, Repository, Worktree,
-        parse_remote,
+        Branch, BranchScope, Change, Commit, Comparison, DiffStats, HistoryPage, RefKind,
+        Repository, Worktree, parse_remote,
     },
+    graph::{Graph, GraphRow},
     preferences::{Appearance, Language, Layout, Preferences},
 };
 use std::{
@@ -40,6 +41,8 @@ use std::{
 const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 const HISTORY_SEARCH_THRESHOLD: usize = 20;
+const MAX_GRAPH_LANES: usize = 10;
+const GRAPH_LANE_WIDTH: f32 = 12.;
 
 gpui_kit::actions!(patchlook, [About, OpenRepository, Refresh, Quit]);
 
@@ -173,6 +176,11 @@ struct HistoryState {
     /// The last plainly clicked row, which a Ctrl/Cmd-click compares against
     /// even while that row's files are still loading.
     anchor: Option<Row>,
+    graph: Graph,
+    /// One layout row per loaded commit; empty while searching.
+    graph_rows: Vec<GraphRow>,
+    working_graph: Option<GraphRow>,
+    scope: Option<BranchScope>,
     has_more: bool,
     revision: Option<String>,
     query: String,
@@ -183,6 +191,43 @@ struct HistoryState {
 }
 
 impl HistoryState {
+    /// Lays the graph out afresh for a newly loaded first page.
+    fn start(&mut self, working_changes: bool, head: bool, scope: Option<BranchScope>) {
+        self.working_changes = working_changes;
+        self.scope = scope;
+        self.graph = Graph::default();
+        self.graph_rows.clear();
+        self.working_graph = None;
+        if working_changes
+            && head
+            && let Some(tip) = self.commits.first()
+        {
+            self.working_graph = Some(self.graph.expect(&tip.id));
+        }
+        self.extend_graph();
+    }
+
+    /// A filtered search result has gaps, so it shows no graph.
+    fn extend_graph(&mut self) {
+        if !self.query.is_empty() {
+            return;
+        }
+        for commit in &self.commits[self.graph_rows.len()..] {
+            self.graph_rows
+                .push(self.graph.row(&commit.id, &commit.parents));
+        }
+    }
+
+    fn graph_lanes(&self) -> usize {
+        self.graph_rows
+            .iter()
+            .chain(&self.working_graph)
+            .map(|row| row.width)
+            .max()
+            .unwrap_or(0)
+            .min(MAX_GRAPH_LANES)
+    }
+
     fn row_count(&self) -> usize {
         usize::from(self.working_changes) + self.commits.len()
     }
@@ -223,6 +268,10 @@ impl HistoryState {
             selected: None,
             compare: None,
             anchor: None,
+            graph: Graph::default(),
+            graph_rows: Vec::new(),
+            working_graph: None,
+            scope: None,
             has_more: false,
             revision: None,
             query: String::new(),
@@ -515,22 +564,14 @@ impl Patchlook {
                     let worktrees = repo.worktrees()?;
                     let branch = repo.branch_name()?;
                     let page = repo.history_filtered(0, reference.as_deref(), &query)?;
-                    let (first, prepared) =
-                        first_history_row(&repo, &page, reference.is_none(), preview)?;
-                    anyhow::Ok((repo, branch, (branches, worktrees), page, first, prepared))
+                    let start = first_history_row(&repo, &page, reference.is_none(), preview)?;
+                    anyhow::Ok((repo, branch, (branches, worktrees), page, start))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((
-                        repo,
-                        branch,
-                        (branches, worktrees),
-                        page,
-                        (working_changes, selected),
-                        prepared,
-                    )) => {
+                    Ok((repo, branch, (branches, worktrees), page, start)) => {
                         let query = std::mem::take(&mut this.history.query);
                         this.history = HistoryState::new(this.preferences.layout, cx);
                         this.history.query = query;
@@ -549,10 +590,11 @@ impl Patchlook {
                         this.history.has_more = page.has_more;
                         this.history.search_available =
                             this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
-                        this.history.working_changes = working_changes;
-                        this.history.selected = selected;
-                        this.history.anchor = selected;
-                        this.apply_changes(prepared, cx);
+                        this.history
+                            .start(start.working_changes, start.head, start.scope);
+                        this.history.selected = start.selected;
+                        this.history.anchor = start.selected;
+                        this.apply_changes(start.prepared, cx);
                     }
                     Err(error) => this.error = Some(format!("{}: {error:#}", tr("load_failed"))),
                 }
@@ -708,15 +750,18 @@ impl Patchlook {
                             this.history.search_available =
                                 this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
                         }
-                        if let Some(((working_changes, selected), prepared)) = prepared {
-                            this.history.working_changes = working_changes;
-                            this.history.selected = selected;
-                            this.history.anchor = selected;
+                        if let Some(start) = prepared {
+                            this.history
+                                .start(start.working_changes, start.head, start.scope);
+                            this.history.selected = start.selected;
+                            this.history.anchor = start.selected;
                             this.history.compare = None;
-                            this.apply_changes(prepared, cx);
+                            this.apply_changes(start.prepared, cx);
                             if this.view == View::History {
                                 this.ensure_history_preview(cx);
                             }
+                        } else {
+                            this.history.extend_graph();
                         }
                         if let Some(reference) = branch {
                             let repo = this.repository.as_ref().unwrap();
@@ -1028,13 +1073,23 @@ impl Patchlook {
     }
 }
 
+/// What a fresh history page opens with.
+struct HistoryStart {
+    working_changes: bool,
+    selected: Option<Row>,
+    /// Whether the page shows the checked-out branch, which the working tree sits on.
+    head: bool,
+    scope: Option<BranchScope>,
+    prepared: PreparedChanges,
+}
+
 /// The first history row is the working tree when the checked-out branch has changes.
 fn first_history_row(
     repo: &Repository,
     page: &HistoryPage,
     head: bool,
     preview: bool,
-) -> anyhow::Result<((bool, Option<Row>), PreparedChanges)> {
+) -> anyhow::Result<HistoryStart> {
     let working = repo.snapshot()?.changes;
     let working_changes = !working.is_empty();
     let (selected, changes, comparison) = match page.commits.first() {
@@ -1046,8 +1101,98 @@ fn first_history_row(
         ),
         None => (None, Vec::new(), Comparison::Working),
     };
-    let prepared = PreparedChanges::load(repo, changes, &comparison, preview)?;
-    Ok(((working_changes, selected), prepared))
+    let scope = match &page.revision {
+        Some(tip) => repo.branch_scope(tip)?,
+        None => None,
+    };
+    Ok(HistoryStart {
+        working_changes,
+        selected,
+        head,
+        scope,
+        prepared: PreparedChanges::load(repo, changes, &comparison, preview)?,
+    })
+}
+
+fn ref_color(kind: RefKind, cx: &App) -> Hsla {
+    match kind {
+        RefKind::Head => cx.theme().primary,
+        RefKind::Local => cx.theme().green,
+        RefKind::Remote => cx.theme().blue,
+        RefKind::Tag => cx.theme().yellow,
+    }
+}
+
+/// Draws one row of the history graph; the working tree's node is hollow.
+fn graph_canvas(
+    row: Option<GraphRow>,
+    lanes: usize,
+    palette: [Hsla; 6],
+    hollow: bool,
+    background: Hsla,
+) -> impl IntoElement {
+    let x = move |bounds: Bounds<Pixels>, column: usize| {
+        bounds.left() + px(GRAPH_LANE_WIDTH * (column as f32 + 0.5) + 4.)
+    };
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let Some(row) = &row else {
+                return;
+            };
+            let middle = bounds.top() + bounds.size.height / 2.;
+            let mut line = |from: Point<Pixels>, to: Point<Pixels>, color: usize| {
+                let mut path = PathBuilder::stroke(px(1.5));
+                path.move_to(from);
+                if from.x == to.x {
+                    path.line_to(to);
+                } else {
+                    let half = (from.y + to.y) / 2.;
+                    path.cubic_bezier_to(to, point(from.x, half), point(to.x, half));
+                }
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, palette[color % palette.len()]);
+                }
+            };
+            let visible = |column: usize| column < lanes;
+            for segment in row.top.iter().filter(|s| visible(s.from) && visible(s.to)) {
+                line(
+                    point(x(bounds, segment.from), bounds.top()),
+                    point(x(bounds, segment.to), middle),
+                    segment.color,
+                );
+            }
+            for segment in row
+                .bottom
+                .iter()
+                .filter(|s| visible(s.from) && visible(s.to))
+            {
+                line(
+                    point(x(bounds, segment.from), middle),
+                    point(x(bounds, segment.to), bounds.bottom()),
+                    segment.color,
+                );
+            }
+            if !visible(row.column) {
+                return;
+            }
+            let center = point(x(bounds, row.column), middle);
+            let dot = |radius: f32| {
+                Bounds::new(
+                    point(center.x - px(radius), center.y - px(radius)),
+                    size(px(radius * 2.), px(radius * 2.)),
+                )
+            };
+            let color = palette[row.color % palette.len()];
+            window.paint_quad(fill(dot(4.), color).corner_radii(px(4.)));
+            if hollow {
+                window.paint_quad(fill(dot(2.5), background).corner_radii(px(2.5)));
+            }
+        },
+    )
+    .flex_none()
+    .w(px(GRAPH_LANE_WIDTH * lanes as f32 + 8.))
+    .h_full()
 }
 
 /// A worktree's folder name and the branch checked out there.
@@ -2439,64 +2584,132 @@ impl Patchlook {
 
     fn history_row(&self, index: usize, cx: &mut Context<Self>) -> Div {
         let row = self.history.row_at(index);
-        let (subject, highlights, author, date) = match row {
+        let scope = self.history.scope.as_ref();
+        let (subject, highlights, author, date, labels, inherited, graph) = match row {
             Row::Working => (
                 tr("uncommitted_changes").to_owned(),
                 Vec::new(),
                 tr("worktree_branch").to_owned(),
                 String::new(),
+                Vec::new(),
+                false,
+                self.history.working_graph.clone(),
             ),
-            Row::Commit(commit) => {
-                let commit = &self.history.commits[commit];
+            Row::Commit(index) => {
+                let commit = &self.history.commits[index];
+                let mut labels: Vec<_> = commit
+                    .refs
+                    .iter()
+                    .map(|label| (label.name.clone(), ref_color(label.kind, cx)))
+                    .collect();
+                if let Some(scope) = scope.filter(|scope| scope.fork.as_ref() == Some(&commit.id)) {
+                    let fork = tr("fork_point").replace("{branch}", &scope.base);
+                    labels.push((fork, cx.theme().muted_foreground));
+                }
                 (
                     commit.subject.clone(),
                     self.commit_highlights(commit, &commit.subject, cx),
                     commit.author.clone(),
                     commit.date.clone(),
+                    labels,
+                    // Commits the branch inherited from its base read dimmer than its own.
+                    scope.is_some_and(|scope| !scope.own.contains(&commit.id)),
+                    self.history.graph_rows.get(index).cloned(),
                 )
             }
         };
-        div().h(px(50.)).px_2().pb_1().child(
-            Button::new(("commit", index))
-                .custom(
-                    ButtonCustomVariant::new(cx)
-                        .hover(cx.theme().list_hover)
-                        .active(cx.theme().secondary_active),
-                )
-                .w_full()
-                .h_full()
-                .justify_start()
-                .selected(self.history.selected == Some(row) || self.history.compare == Some(row))
-                .tooltip(format!("{subject}\n{}", tr("compare_hint")))
-                .accessibility_label(format!("{subject}, {author}, {date}"))
-                .child(
-                    v_flex()
-                        .w_full()
-                        .min_w_0()
-                        .items_start()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .truncate()
-                                .when(row == Row::Working, |text| text.italic())
-                                .child(StyledText::new(subject).with_highlights(highlights)),
+        let lanes = self.history.graph_lanes();
+        let palette = [
+            cx.theme().blue,
+            cx.theme().green,
+            cx.theme().magenta,
+            cx.theme().yellow,
+            cx.theme().cyan,
+            cx.theme().red,
+        ];
+        h_flex()
+            .h(px(50.))
+            .pr_2()
+            .when(lanes == 0, |element| element.pl_2())
+            .when(lanes > 0, |element| {
+                element.child(graph_canvas(
+                    graph,
+                    lanes,
+                    palette,
+                    row == Row::Working,
+                    cx.theme().sidebar,
+                ))
+            })
+            .child(
+                div().flex_1().min_w_0().h_full().pb_1().child(
+                    Button::new(("commit", index))
+                        .custom(
+                            ButtonCustomVariant::new(cx)
+                                .hover(cx.theme().list_hover)
+                                .active(cx.theme().secondary_active),
                         )
+                        .w_full()
+                        .h_full()
+                        .justify_start()
+                        .selected(
+                            self.history.selected == Some(row) || self.history.compare == Some(row),
+                        )
+                        .tooltip(format!("{subject}\n{}", tr("compare_hint")))
+                        .accessibility_label(format!("{subject}, {author}, {date}"))
                         .child(
-                            h_flex()
+                            v_flex()
                                 .w_full()
-                                .gap_2()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(div().flex_1().truncate().child(author))
-                                .child(date),
-                        ),
-                )
-                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                    let modifiers = event.modifiers();
-                    this.select_row(row, modifiers.control || modifiers.platform, cx)
-                })),
-        )
+                                .min_w_0()
+                                .items_start()
+                                .gap_1()
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .min_w_0()
+                                        .gap_1()
+                                        .children(labels.into_iter().map(|(name, color)| {
+                                            div()
+                                                .flex_none()
+                                                .max_w(px(120.))
+                                                .truncate()
+                                                .px_1()
+                                                .rounded_sm()
+                                                .text_xs()
+                                                .bg(color.opacity(0.15))
+                                                .text_color(color)
+                                                .child(name)
+                                        }))
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .text_sm()
+                                                .truncate()
+                                                .when(row == Row::Working, |text| text.italic())
+                                                .when(inherited, |text| {
+                                                    text.text_color(cx.theme().muted_foreground)
+                                                })
+                                                .child(
+                                                    StyledText::new(subject)
+                                                        .with_highlights(highlights),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap_2()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(div().flex_1().truncate().child(author))
+                                        .child(date),
+                                ),
+                        )
+                        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                            let modifiers = event.modifiers();
+                            this.select_row(row, modifiers.control || modifiers.platform, cx)
+                        })),
+                ),
+            )
     }
 
     /// Names both sides while two rows are compared.

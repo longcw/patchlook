@@ -106,5 +106,6 @@
   "open_remote": "通过 SSH 打开仓库",
   "remote_placeholder": "host:/仓库/路径",
   "remote_invalid": "请输入 host:/路径 或 host:~/路径 格式的远程地址",
-  "switch_worktree": "切换工作树"
+  "switch_worktree": "切换工作树",
+  "fork_point": "从 {branch} 分出"
 }

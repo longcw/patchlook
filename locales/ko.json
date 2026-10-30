@@ -106,5 +106,6 @@
   "open_remote": "SSH로 저장소 열기",
   "remote_placeholder": "host:/path/to/repo",
   "remote_invalid": "원격 주소를 host:/경로 또는 host:~/경로 형식으로 입력하세요",
-  "switch_worktree": "워크트리 전환"
+  "switch_worktree": "워크트리 전환",
+  "fork_point": "{branch}에서 분기"
 }
