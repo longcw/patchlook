@@ -138,5 +138,15 @@
   "save": "儲存",
   "comment_placeholder": "審查意見，將儲存到檔案中",
   "save_failed": "無法儲存",
-  "edit_new_side_only": "請在新版本一側選擇要評論或編輯的行"
+  "edit_new_side_only": "請在新版本一側選擇要評論或編輯的行",
+  "saved_file": "已儲存 {path}",
+  "undid_save": "已復原對 {path} 的儲存",
+  "redid_save": "已重做對 {path} 的儲存",
+  "undo": "復原",
+  "edit_file": "編輯檔案",
+  "editing_file": "正在編輯 {path}",
+  "unsaved": "未儲存",
+  "discard": "捨棄",
+  "close": "關閉",
+  "edit_file_here": "在第 {line} 行編輯檔案"
 }

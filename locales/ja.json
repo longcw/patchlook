@@ -138,5 +138,15 @@
   "save": "保存",
   "comment_placeholder": "ファイルに保存されるレビューコメント",
   "save_failed": "保存できませんでした",
-  "edit_new_side_only": "新しい側の行を選んでコメントまたは編集してください"
+  "edit_new_side_only": "新しい側の行を選んでコメントまたは編集してください",
+  "saved_file": "{path} を保存しました",
+  "undid_save": "{path} の保存を取り消しました",
+  "redid_save": "{path} の保存をやり直しました",
+  "undo": "元に戻す",
+  "edit_file": "ファイルを編集",
+  "editing_file": "{path} を編集中",
+  "unsaved": "未保存",
+  "discard": "破棄",
+  "close": "閉じる",
+  "edit_file_here": "{line} 行目でファイルを編集"
 }

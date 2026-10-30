@@ -138,5 +138,15 @@
   "save": "Save",
   "comment_placeholder": "Review comment, saved into the file",
   "save_failed": "Could not save",
-  "edit_new_side_only": "Pick lines on the new side to comment on or edit"
+  "edit_new_side_only": "Pick lines on the new side to comment on or edit",
+  "saved_file": "Saved {path}",
+  "undid_save": "Undid the save to {path}",
+  "redid_save": "Redid the save to {path}",
+  "undo": "Undo",
+  "edit_file": "Edit file",
+  "editing_file": "Editing {path}",
+  "unsaved": "Unsaved",
+  "discard": "Discard",
+  "close": "Close",
+  "edit_file_here": "Edit file at line {line}"
 }

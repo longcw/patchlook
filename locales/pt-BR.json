@@ -138,5 +138,15 @@
   "save": "Salvar",
   "comment_placeholder": "Comentário de revisão, salvo no arquivo",
   "save_failed": "Não foi possível salvar",
-  "edit_new_side_only": "Escolha linhas do lado novo para comentar ou editar"
+  "edit_new_side_only": "Escolha linhas do lado novo para comentar ou editar",
+  "saved_file": "{path} salvo",
+  "undid_save": "Salvamento de {path} desfeito",
+  "redid_save": "Salvamento de {path} refeito",
+  "undo": "Desfazer",
+  "edit_file": "Editar arquivo",
+  "editing_file": "Editando {path}",
+  "unsaved": "Não salvo",
+  "discard": "Descartar",
+  "close": "Fechar",
+  "edit_file_here": "Editar arquivo na linha {line}"
 }

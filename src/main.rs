@@ -5,7 +5,7 @@ mod change_tree;
 mod file_icons;
 mod image_diff;
 mod strings;
-use app::{About, OpenRepository, Patchlook, Quit, Refresh};
+use app::{About, OpenRepository, Patchlook, Quit, RedoEdit, Refresh, SaveFile, UndoEdit};
 use gpui_kit::*;
 use strings::tr;
 
@@ -50,6 +50,10 @@ fn main() {
                 KeyBinding::new("secondary-r", Refresh, None),
                 KeyBinding::new("f5", Refresh, None),
                 KeyBinding::new("secondary-q", Quit, None),
+                // Text fields keep their own undo; these act on saved files.
+                KeyBinding::new("secondary-z", UndoEdit, Some("Patchlook")),
+                KeyBinding::new("secondary-shift-z", RedoEdit, Some("Patchlook")),
+                KeyBinding::new("secondary-s", SaveFile, Some("Patchlook")),
             ]);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {

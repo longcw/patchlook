@@ -138,5 +138,15 @@
   "save": "保存",
   "comment_placeholder": "评审意见，将保存到文件中",
   "save_failed": "无法保存",
-  "edit_new_side_only": "请在新版本一侧选择要评论或编辑的行"
+  "edit_new_side_only": "请在新版本一侧选择要评论或编辑的行",
+  "saved_file": "已保存 {path}",
+  "undid_save": "已撤销对 {path} 的保存",
+  "redid_save": "已重做对 {path} 的保存",
+  "undo": "撤销",
+  "edit_file": "编辑文件",
+  "editing_file": "正在编辑 {path}",
+  "unsaved": "未保存",
+  "discard": "放弃",
+  "close": "关闭",
+  "edit_file_here": "在第 {line} 行编辑文件"
 }

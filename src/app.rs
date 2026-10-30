@@ -15,7 +15,10 @@ use gpui_kit::{
             DiffLinePosition, DiffLineRange, DiffMode, DiffOverviewKind, DiffSide, DiffState,
         },
         h_flex,
-        input::{Input, InputEvent as TextInputEvent, InputState, Textarea, TextareaState},
+        input::{
+            Editor, EditorState, Input, InputEvent as TextInputEvent, InputState, Position,
+            Textarea, TextareaState,
+        },
         menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
         resizable::{h_resizable, resizable_panel, v_resizable},
         scroll::{Scrollbar, ScrollbarMode},
@@ -49,13 +52,25 @@ use std::{
 const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 const LINK_RESULT_DURATION: Duration = Duration::from_secs(2);
+const SAVE_RESULT_DURATION: Duration = Duration::from_secs(5);
 const HISTORY_SEARCH_THRESHOLD: usize = 20;
 const MAX_GRAPH_LANES: usize = 10;
 /// The viewed-branch choice for the checked-out branch; no choice means all branches.
 const HEAD_BRANCH: &str = "HEAD";
 const GRAPH_LANE_WIDTH: f32 = 12.;
 
-gpui_kit::actions!(patchlook, [About, OpenRepository, Refresh, Quit]);
+gpui_kit::actions!(
+    patchlook,
+    [
+        About,
+        OpenRepository,
+        Refresh,
+        Quit,
+        UndoEdit,
+        RedoEdit,
+        SaveFile
+    ]
+);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -345,6 +360,11 @@ pub struct Patchlook {
     link_status: Option<LinkStatus>,
     /// The comment or edit being written under some lines of a working-tree file.
     line_edit: Option<LineEdit>,
+    /// A working-tree file open in the editor in place of its diff.
+    file_editor: Option<FileEditor>,
+    /// Saved edits, newest last, that undo can take back; redo holds what undo took.
+    undo: Vec<SavedEdit>,
+    redo: Vec<SavedEdit>,
     scroll_after_load: Option<DiffLinePosition>,
     view: View,
     history: HistoryState,
@@ -434,6 +454,9 @@ impl Patchlook {
             github_remotes: Vec::new(),
             link_status: None,
             line_edit: None,
+            file_editor: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
             scroll_after_load: None,
             view,
             repository_preview: false,
@@ -1121,6 +1144,7 @@ impl Patchlook {
                         this.link_status = Some(LinkStatus {
                             text: opened_message(url.as_deref()),
                             running: false,
+                            undo: false,
                             _task: hide,
                         });
                     }
@@ -1132,6 +1156,7 @@ impl Patchlook {
         self.link_status = Some(LinkStatus {
             text: status,
             running: true,
+            undo: false,
             _task: task,
         });
         cx.notify();
@@ -1374,20 +1399,21 @@ impl Patchlook {
             let result = cx
                 .background_spawn(async move {
                     let bytes = repo.worktree_file(&path)?;
-                    let content = String::from_utf8(bytes)?;
-                    let edited = edit::apply(&content, &path, start, end, &original, kind, &text)?;
-                    repo.write_worktree_file(&path, edited.as_bytes())
+                    let before = String::from_utf8(bytes)?;
+                    let after = edit::apply(&before, &path, start, end, &original, kind, &text)?;
+                    repo.write_worktree_file(&path, after.as_bytes())?;
+                    anyhow::Ok(SavedEdit {
+                        path,
+                        before,
+                        after,
+                    })
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok(()) => {
+                    Ok(saved) => {
                         this.line_edit = None;
-                        this.scroll_after_load = Some(scroll);
-                        // Reload the saved file's diff in place.
-                        if let Some(index) = this.history.files.selected_file.take() {
-                            this.select_source_file(index, cx);
-                        }
+                        this.record_save(saved, Some(scroll), cx);
                     }
                     Err(error) => {
                         if let Some(edit) = this.line_edit.as_mut() {
@@ -1401,6 +1427,266 @@ impl Patchlook {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Remembers a save for undo, reports it, and reloads the diff at `scroll`.
+    fn record_save(
+        &mut self,
+        saved: SavedEdit,
+        scroll: Option<DiffLinePosition>,
+        cx: &mut Context<Self>,
+    ) {
+        let message = tr("saved_file").replace("{path}", &saved.path.display().to_string());
+        self.undo.push(saved);
+        self.redo.clear();
+        self.show_saved(message, true, cx);
+        self.scroll_after_load = scroll;
+        self.reload_selected_file(cx);
+    }
+
+    fn show_saved(&mut self, text: String, undo: bool, cx: &mut Context<Self>) {
+        let hide = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_RESULT_DURATION).await;
+            let _ = this.update(cx, |this, cx| {
+                this.link_status = None;
+                cx.notify();
+            });
+        });
+        self.link_status = Some(LinkStatus {
+            text,
+            running: false,
+            undo,
+            _task: hide,
+        });
+    }
+
+    /// Reloads the selected file's diff in place, after its file changed.
+    fn reload_selected_file(&mut self, cx: &mut Context<Self>) {
+        if let Some(index) = self.history.files.selected_file.take() {
+            self.select_source_file(index, cx);
+        }
+    }
+
+    /// Takes back the newest save, or reapplies the newest undone one, only if
+    /// the file still holds what Patchlook left there.
+    fn step_history(&mut self, undo: bool, cx: &mut Context<Self>) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let Some(saved) = (if undo {
+            self.undo.pop()
+        } else {
+            self.redo.pop()
+        }) else {
+            return;
+        };
+        let (expected, wanted) = if undo {
+            (saved.after.clone(), saved.before.clone())
+        } else {
+            (saved.before.clone(), saved.after.clone())
+        };
+        let path = saved.path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let current = String::from_utf8(repo.worktree_file(&path)?)?;
+                    anyhow::ensure!(
+                        current == expected,
+                        "{} changed since that save, so it was left as it is",
+                        path.display()
+                    );
+                    repo.write_worktree_file(&path, wanted.as_bytes())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        let key = if undo { "undid_save" } else { "redid_save" };
+                        let message = tr(key).replace("{path}", &saved.path.display().to_string());
+                        if undo {
+                            this.redo.push(saved);
+                        } else {
+                            this.undo.push(saved);
+                        }
+                        this.show_saved(message, false, cx);
+                        this.reload_selected_file(cx);
+                    }
+                    Err(error) => this.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The working-file line for a diff line: its own on the new side, else the top.
+    fn edit_line(&self, position: Option<&DiffLinePosition>) -> usize {
+        position
+            .filter(|position| position.side() == DiffSide::Modified)
+            .map_or(1, DiffLinePosition::line)
+    }
+
+    /// Opens the selected working-tree file in the editor, at `line` (1-based).
+    fn open_file_editor(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(repo), Some(change)) = (self.repository.clone(), self.editable_file()) else {
+            return;
+        };
+        let path = change.path.clone();
+        let diff = self.active_files().diff.read(cx);
+        let Some(file) = diff.files().first() else {
+            return;
+        };
+        let (diff_path, language) = (file.path().clone(), file.language());
+        self.line_edit = None;
+        cx.spawn_in(window, async move |this, cx| {
+            let read_path = path.clone();
+            let result = cx
+                .background_spawn(async move {
+                    anyhow::Ok(String::from_utf8(repo.worktree_file(&read_path)?)?)
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(content) => {
+                        let editor =
+                            cx.new(|cx| EditorState::new(window, cx).language(language.clone()));
+                        editor.update(cx, |editor, cx| {
+                            editor.set_value(content.clone(), window, cx);
+                            let row = line.saturating_sub(1) as u32;
+                            editor.set_cursor_position(Position::new(row, 0), window, cx);
+                        });
+                        this.file_editor = Some(FileEditor {
+                            path,
+                            diff_path,
+                            original: content,
+                            editor,
+                            saving: false,
+                        });
+                    }
+                    Err(error) => this.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn close_file_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.file_editor = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Saves the editor's text, if the file on disk is still as it was opened.
+    fn save_file_editor(&mut self, _: &SaveFile, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(repo), Some(open)) = (self.repository.clone(), self.file_editor.as_mut()) else {
+            return;
+        };
+        let text = open.editor.read(cx).value().to_string();
+        if open.saving {
+            return;
+        }
+        if text == open.original {
+            self.close_file_editor(window, cx);
+            return;
+        }
+        open.saving = true;
+        let line = open.editor.read(cx).cursor_position().line as usize + 1;
+        let scroll = DiffLinePosition::new(open.diff_path.clone(), DiffSide::Modified, line);
+        let saved = SavedEdit {
+            path: open.path.clone(),
+            before: open.original.clone(),
+            after: text,
+        };
+        let pending = saved.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let current = String::from_utf8(repo.worktree_file(&pending.path)?)?;
+                    anyhow::ensure!(
+                        current == pending.before,
+                        "{} changed on disk since it was opened; copy your changes and reopen it",
+                        pending.path.display()
+                    );
+                    repo.write_worktree_file(&pending.path, pending.after.as_bytes())
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.close_file_editor(window, cx);
+                        this.record_save(saved, Some(scroll), cx);
+                    }
+                    Err(error) => {
+                        if let Some(open) = this.file_editor.as_mut() {
+                            open.saving = false;
+                        }
+                        this.error = Some(format!("{}: {error:#}", tr("save_failed")));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The editor that replaces the diff while a file is open for editing.
+    fn file_editor_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.file_editor.as_ref()?;
+        let changed = open.editor.read(cx).value().as_ref() != open.original;
+        Some(
+            v_flex()
+                .id("file-editor")
+                .test_support()
+                .size_full()
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .h(px(32.))
+                        .px_3()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .text_sm()
+                        .child(div().flex_1().truncate().child(
+                            tr("editing_file").replace("{path}", &open.path.display().to_string()),
+                        ))
+                        .when(changed, |row| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(tr("unsaved")),
+                            )
+                        })
+                        .child(
+                            Button::new("close-editor")
+                                .label(tr(if changed { "discard" } else { "close" }))
+                                .xsmall()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_file_editor(window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("save-file")
+                                .label(tr("save"))
+                                .xsmall()
+                                .primary()
+                                .loading(open.saving)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_file_editor(&SaveFile, window, cx)
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(Editor::new(&open.editor).h_full()),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The box under the edited lines: comment or edit, the text, and its buttons.
@@ -1698,9 +1984,28 @@ struct LineEdit {
     _subscription: Subscription,
 }
 
+struct FileEditor {
+    path: PathBuf,
+    diff_path: SharedString,
+    /// The file as it was opened; a save is refused if the file changed meanwhile.
+    original: String,
+    editor: Entity<EditorState>,
+    saving: bool,
+}
+
+/// A file's content before and after a save made from Patchlook.
+#[derive(Clone)]
+struct SavedEdit {
+    path: PathBuf,
+    before: String,
+    after: String,
+}
+
 struct LinkStatus {
     text: String,
     running: bool,
+    /// Offers to take back the save it reports.
+    undo: bool,
     /// The lookup while running, then the timer that hides its result;
     /// dropping it cancels either.
     _task: Task<()>,
@@ -3257,6 +3562,19 @@ impl Patchlook {
                         });
                     })),
                 )
+                .when(
+                    self.editable_file().is_some() && self.file_editor.is_none(),
+                    |row| {
+                        row.child(
+                            icon_button("edit-file", IconName::FileText, "edit_file")
+                                .text_color(cx.theme().muted_foreground)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let line = this.edit_line(this.hovered_line.as_ref());
+                                    this.open_file_editor(line, window, cx)
+                                })),
+                        )
+                    },
+                )
                 .child(
                     icon_button("soft-wrap", IconName::TextWrap, "soft_wrap")
                         .text_color(cx.theme().muted_foreground)
@@ -3914,6 +4232,8 @@ impl Patchlook {
             self.message("load_failed", None, cx)
         } else if let Some(image) = &self.active_files().image {
             image.clone().into_any_element()
+        } else if let Some(editor) = self.file_editor_pane(cx) {
+            editor
         } else if self.active_files().selected_file.is_some() {
             let app = cx.entity().downgrade();
             let hover_app = app.clone();
@@ -3976,10 +4296,18 @@ impl Patchlook {
                                         this.hovered_line = position.cloned();
                                     });
                                 })
-                                // Cmd/Ctrl-click opens the line in Zed, like an editor's go-to.
-                                .on_line_click(move |position, event, _, cx| {
+                                // Cmd/Ctrl-click opens the line in Zed, like an editor's go-to;
+                                // a double click edits a working-tree file right there.
+                                .on_line_click(move |position, event, window, cx| {
                                     let modifiers = event.modifiers();
-                                    if modifiers.platform || modifiers.control {
+                                    if event.click_count() == 2 && !modifiers.secondary() {
+                                        let _ = click_app.update(cx, |this, cx| {
+                                            if this.editable_file().is_some() {
+                                                let line = this.edit_line(Some(position));
+                                                this.open_file_editor(line, window, cx);
+                                            }
+                                        });
+                                    } else if modifiers.platform || modifiers.control {
                                         let _ = click_app.update(cx, |this, cx| {
                                             let target = this.line_target(Some(position));
                                             if target.is_some() {
@@ -4016,6 +4344,26 @@ impl Patchlook {
                                 },
                             )
                             .item(PopupMenuItem::new(tr("open_file_in_zed")).on_click(open(file)))
+                            .when(
+                                this.editable_file().is_some(),
+                                |menu| {
+                                    let line = this.edit_line(this.hovered_line.as_ref());
+                                    let app = app.clone();
+                                    menu.separator().item(
+                                        PopupMenuItem::new(
+                                            tr("edit_file_here")
+                                                .replace("{line}", &line.to_string()),
+                                        )
+                                        .on_click(
+                                            move |_, window, cx| {
+                                                let _ = app.update(cx, |this, cx| {
+                                                    this.open_file_editor(line, window, cx)
+                                                });
+                                            },
+                                        ),
+                                    )
+                                },
+                            )
                         }),
                 )
                 .children(self.overview_ruler(cx))
@@ -4266,6 +4614,9 @@ impl Render for Patchlook {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::refresh))
+            .on_action(cx.listener(Self::save_file_editor))
+            .on_action(cx.listener(|this, _: &UndoEdit, _, cx| this.step_history(true, cx)))
+            .on_action(cx.listener(|this, _: &RedoEdit, _, cx| this.step_history(false, cx)))
             .on_action(cx.listener(Self::show_about))
             .child(self.toolbar(cx))
             .when_some(self.visible_error().cloned(), |view, error| {
@@ -4337,6 +4688,18 @@ impl Render for Patchlook {
                                     .into_any_element()
                             })
                             .child(status.text.clone())
+                            .when(status.undo, |card| {
+                                card.child(
+                                    Button::new("undo-save")
+                                        .label(tr("undo"))
+                                        .xsmall()
+                                        .ghost()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.link_status = None;
+                                            this.step_history(true, cx);
+                                        })),
+                                )
+                            })
                             .when(status.running, |card| {
                                 card.child(
                                     Button::new("cancel-link")
@@ -4452,6 +4815,9 @@ mod tests {
             github_remotes: Vec::new(),
             link_status: None,
             line_edit: None,
+            file_editor: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
             scroll_after_load: None,
             view: View::History,
             repository_preview: false,
@@ -5396,6 +5762,17 @@ mod tests {
         edit(EditKind::Comment, "Why 2?", cx);
         let file = || std::fs::read_to_string(root.join("app.py")).unwrap();
         assert_eq!(file(), "def run():\n    return 2\n    # Why 2?\n");
+        // Undo takes the save back and redo applies it again.
+        let step = |undo: bool, cx: &mut TestAppContext| {
+            app.update(cx, |app, cx| app.step_history(undo, cx));
+            cx.run_until_parked();
+            cx.executor().advance_clock(FILE_SELECTION_DELAY);
+            cx.run_until_parked();
+        };
+        step(true, cx);
+        assert_eq!(file(), "def run():\n    return 2\n");
+        step(false, cx);
+        assert_eq!(file(), "def run():\n    return 2\n    # Why 2?\n");
         // The reloaded diff shows the comment, so a further edit sees it.
         app.read_with(cx, |app, _| {
             assert!(app.line_edit.is_none());
@@ -5403,9 +5780,34 @@ mod tests {
         });
         edit(EditKind::Replace, "    return 3", cx);
         assert_eq!(file(), "def run():\n    return 3\n    # Why 2?\n");
-        // An edit made from a stale view is refused.
+        // The editor saves the whole file, and undo works the same for it.
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| app.open_file_editor(2, window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                let editor = app.file_editor.as_ref().unwrap().editor.clone();
+                assert_eq!(editor.read(cx).value().as_ref(), file());
+                editor.update(cx, |editor, cx| {
+                    editor.set_value("def run():\n    return 9\n", window, cx)
+                });
+                app.save_file_editor(&SaveFile, window, cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file(), "def run():\n    return 9\n");
+        app.read_with(cx, |app, _| assert!(app.file_editor.is_none()));
+        step(true, cx);
+        assert_eq!(file(), "def run():\n    return 3\n    # Why 2?\n");
+        // An edit made from a stale view is refused, and so is undo over a later change.
         std::fs::write(root.join("app.py"), "def run():\n    return 4\n").unwrap();
         edit(EditKind::Replace, "    return 5", cx);
+        assert_eq!(file(), "def run():\n    return 4\n");
+        app.update(cx, |app, _| app.error = None);
+        step(true, cx);
         assert_eq!(file(), "def run():\n    return 4\n");
         app.read_with(cx, |app, _| assert!(app.error.is_some()));
     }

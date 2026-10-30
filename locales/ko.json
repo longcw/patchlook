@@ -138,5 +138,15 @@
   "save": "저장",
   "comment_placeholder": "파일에 저장되는 리뷰 댓글",
   "save_failed": "저장할 수 없습니다",
-  "edit_new_side_only": "새 버전 쪽의 줄을 선택해 댓글을 달거나 편집하세요"
+  "edit_new_side_only": "새 버전 쪽의 줄을 선택해 댓글을 달거나 편집하세요",
+  "saved_file": "{path} 저장됨",
+  "undid_save": "{path} 저장을 취소했습니다",
+  "redid_save": "{path} 저장을 다시 적용했습니다",
+  "undo": "실행 취소",
+  "edit_file": "파일 편집",
+  "editing_file": "{path} 편집 중",
+  "unsaved": "저장 안 됨",
+  "discard": "버리기",
+  "close": "닫기",
+  "edit_file_here": "{line}행에서 파일 편집"
 }

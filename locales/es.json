@@ -138,5 +138,15 @@
   "save": "Guardar",
   "comment_placeholder": "Comentario de revisión, se guarda en el archivo",
   "save_failed": "No se pudo guardar",
-  "edit_new_side_only": "Elige líneas del lado nuevo para comentar o editar"
+  "edit_new_side_only": "Elige líneas del lado nuevo para comentar o editar",
+  "saved_file": "{path} guardado",
+  "undid_save": "Se deshizo el guardado de {path}",
+  "redid_save": "Se rehízo el guardado de {path}",
+  "undo": "Deshacer",
+  "edit_file": "Editar archivo",
+  "editing_file": "Editando {path}",
+  "unsaved": "Sin guardar",
+  "discard": "Descartar",
+  "close": "Cerrar",
+  "edit_file_here": "Editar archivo en la línea {line}"
 }
