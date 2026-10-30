@@ -12,7 +12,7 @@ use gpui_kit::{
         button::{Button, ButtonCustomVariant, ButtonVariants},
         diff::{
             Diff, DiffChangeIndicator, DiffFile, DiffHunkSeparator, DiffLinePosition, DiffMode,
-            DiffSide, DiffState,
+            DiffOverviewKind, DiffState,
         },
         h_flex,
         input::{Input, InputEvent as TextInputEvent, InputState},
@@ -33,7 +33,6 @@ use patchlook::{
     },
     github,
     graph::{Graph, GraphRow},
-    overview::{Layout as OverviewLayout, MarkKind, Overview, overview},
     preferences::{Appearance, Language, Layout, Preferences, StartView},
     zed,
 };
@@ -64,7 +63,7 @@ enum View {
 }
 
 enum FileContent {
-    Text(Vec<DiffFile>, Overview),
+    Text(Vec<DiffFile>),
     Image(ImageVersions),
 }
 
@@ -76,8 +75,9 @@ impl FileContent {
                 repo.file_versions(change, comparison)?,
             )?))
         } else {
-            let patch = repo.patch(change, comparison)?;
-            Ok(Self::Text(DiffFile::parse(&patch)?, overview(&patch)))
+            Ok(Self::Text(DiffFile::parse(
+                &repo.patch(change, comparison)?,
+            )?))
         }
     }
 }
@@ -124,7 +124,6 @@ struct ChangeState {
     files_loading: bool,
     patch_loading: bool,
     empty_patch: bool,
-    overview: Overview,
     error: Option<String>,
     load_task: Option<Task<()>>,
     patch_task: Option<Task<()>>,
@@ -150,7 +149,6 @@ impl ChangeState {
             files_loading: false,
             patch_loading: false,
             empty_patch: false,
-            overview: Overview::default(),
             error: None,
             load_task: None,
             patch_task: None,
@@ -955,14 +953,8 @@ impl Patchlook {
         match result {
             Ok(content) => {
                 let (diffs, image) = match content {
-                    FileContent::Text(diffs, overview) => {
-                        files.overview = overview;
-                        (diffs, None)
-                    }
-                    FileContent::Image(image) => {
-                        files.overview = Overview::default();
-                        (Vec::new(), Some(image))
-                    }
+                    FileContent::Text(diffs) => (diffs, None),
+                    FileContent::Image(image) => (Vec::new(), Some(image)),
                 };
                 files.empty_patch = diffs.is_empty() && image.is_none();
                 files.image = image.map(|image| cx.new(|_| ImageDiff::new(image)));
@@ -975,7 +967,6 @@ impl Patchlook {
             Err(error) => {
                 files.image = None;
                 files.image_subscription = None;
-                files.overview = Overview::default();
                 files.diff.update(cx, |diff, cx| diff.set_files([], cx));
                 files.error = Some(format!("{}: {error:#}", tr("load_failed")));
             }
@@ -1250,32 +1241,21 @@ impl Patchlook {
         })
     }
 
-    /// A strip beside the diff marking each changed block where the diff shows
-    /// it, like an editor's overview ruler; a click scrolls to the nearest change.
+    /// A strip beside the diff, like an editor's overview ruler: changed rows,
+    /// rows holding the selected text, and a box around the rows in view.
+    /// A click scrolls the diff to that point.
     fn overview_ruler(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let overview = self.active_files().overview.clone();
-        if overview.marks.is_empty() {
-            return None;
-        }
         let diff = self.active_files().diff.clone();
-        let state = diff.read(cx);
-        let path = state.files().first()?.path().clone();
-        let placement = overview.place(OverviewLayout {
-            split: state.mode() == DiffMode::Split,
-            context: state
-                .has_collapsed_context()
-                .then(|| state.context_lines())
-                .flatten(),
-            min_collapsed: state.min_collapsed_lines(),
-        });
-        if placement.rows == 0 {
+        let overview = diff.read(cx).overview();
+        if overview.rows == 0 || overview.marks.is_empty() {
             return None;
         }
-        let colors = [cx.theme().success, cx.theme().danger, cx.theme().blue];
+        let theme = cx.theme();
+        let colors = (theme.success, theme.danger, theme.blue, theme.yellow);
+        let viewport = theme.foreground.opacity(0.12);
         let bounds = Rc::new(Cell::new(Bounds::default()));
         let painted = bounds.clone();
-        let kinds: Vec<_> = overview.marks.iter().map(|mark| mark.kind).collect();
-        let marks = placement.clone();
+        let rows = overview.rows;
         Some(
             div()
                 .id("change-overview")
@@ -1283,8 +1263,8 @@ impl Patchlook {
                 .w(px(12.))
                 .h_full()
                 .border_l_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().muted.opacity(0.3))
+                .border_color(theme.border)
+                .bg(theme.muted.opacity(0.3))
                 .cursor_pointer()
                 .tooltip(|window, cx| Tooltip::new(tr("overview_hint")).build(window, cx))
                 .child(
@@ -1292,22 +1272,36 @@ impl Patchlook {
                         |_, _, _| {},
                         move |area, _, window, _| {
                             painted.set(area);
-                            let scale = area.size.height / marks.rows as f32;
-                            for (&(start, rows), kind) in marks.marks.iter().zip(&kinds) {
-                                let color = colors[match kind {
-                                    MarkKind::Added => 0,
-                                    MarkKind::Deleted => 1,
-                                    MarkKind::Modified => 2,
-                                }];
-                                // Keep one-line changes visible in long files.
-                                let height = (scale * rows.max(1) as f32).max(px(4.));
+                            let scale = area.size.height / overview.rows as f32;
+                            let span = |start: usize, end: usize, min: f32| {
+                                let height = (scale * (end - start) as f32).max(px(min));
                                 let top =
                                     (area.top() + scale * start as f32).min(area.bottom() - height);
+                                (top, height)
+                            };
+                            let (top, height) =
+                                span(overview.visible.start, overview.visible.end, 6.);
+                            window.paint_quad(fill(
+                                Bounds::new(point(area.left(), top), size(area.size.width, height)),
+                                viewport,
+                            ));
+                            for mark in &overview.marks {
+                                // Changes fill the left half and matches the right, so both show.
+                                let (color, right) = match mark.kind {
+                                    DiffOverviewKind::Added => (colors.0, false),
+                                    DiffOverviewKind::Deleted => (colors.1, false),
+                                    DiffOverviewKind::Modified => (colors.2, false),
+                                    DiffOverviewKind::Match => (colors.3, true),
+                                };
+                                let (top, height) = span(mark.row, mark.row + 1, 3.);
+                                let half = area.size.width / 2.;
+                                let x = if right {
+                                    area.left() + half
+                                } else {
+                                    area.left()
+                                };
                                 window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(area.left() + px(1.), top),
-                                        size(area.size.width - px(2.), height),
-                                    ),
+                                    Bounds::new(point(x, top), size(half, height)),
                                     color,
                                 ));
                             }
@@ -1321,18 +1315,19 @@ impl Patchlook {
                         return;
                     }
                     let fraction = (event.position.y - area.top()) / area.size.height;
-                    let row = (fraction.clamp(0., 1.) * placement.rows as f32) as usize;
-                    if let Some(mark) = placement.nearest(row).map(|index| overview.marks[index]) {
-                        let side = if mark.original {
-                            DiffSide::Original
-                        } else {
-                            DiffSide::Modified
-                        };
-                        let position = DiffLinePosition::new(path.clone(), side, mark.line);
-                        diff.update(cx, |diff, cx| diff.scroll_to_line(position, cx));
-                    }
+                    let row = (fraction.clamp(0., 1.) * rows as f32) as usize;
+                    diff.update(cx, |diff, cx| diff.scroll_to_row(row, cx));
                 }),
         )
+    }
+
+    /// Selecting text in a diff marks its other occurrences; anything else clears them.
+    fn highlight_selection(&mut self, cx: &mut Context<Self>) {
+        let diff = self.active_files().diff.clone();
+        let text = diff.read(cx).selected_text(cx);
+        let query = (!text.contains('\n') && !text.trim().is_empty() && text.len() <= 200)
+            .then(|| SharedString::from(text));
+        diff.update(cx, |diff, cx| diff.set_search(query, cx));
     }
 
     /// Repos shows files or a diff in one pane; Compare shows both side by side.
@@ -3655,6 +3650,10 @@ impl Patchlook {
                         .flex_1()
                         .min_w_0()
                         .h_full()
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.highlight_selection(cx)),
+                        )
                         .child(
                             Diff::new(&self.active_files().diff)
                                 .when_some(
