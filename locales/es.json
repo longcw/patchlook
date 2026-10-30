@@ -4,7 +4,7 @@
   "open_repository": "Abrir repositorio",
   "remove_repository": "Quitar repositorio de la lista de recientes",
   "refresh": "Actualizar",
-  "history": "Historial",
+  "history": "Comparar",
   "split": "En paralelo",
   "inline": "Unificado",
   "soft_wrap": "Ajustar líneas",
@@ -68,7 +68,7 @@
   "repositories": "Repos",
   "recent_repositories": "Recientes",
   "branches": "Ramas",
-  "head_branch": "HEAD (rama de trabajo)",
+  "head_branch": "HEAD",
   "worktree_branch": "Trabajo",
   "remote_branch": "Remota",
   "local_branch": "Local",
@@ -107,5 +107,7 @@
   "remote_placeholder": "host:/ruta/al/repo",
   "remote_invalid": "Introduce un remoto como host:/ruta o host:~/ruta",
   "switch_worktree": "Cambiar árbol de trabajo",
-  "fork_point": "Bifurcado de {branch}"
+  "fork_point": "Bifurcado de {branch}",
+  "all_branches": "Todas las ramas",
+  "open_in_compare": "Abrir en Comparar"
 }

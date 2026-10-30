@@ -4,7 +4,7 @@
   "open_repository": "Open repository",
   "remove_repository": "Remove repository from recent list",
   "refresh": "Refresh",
-  "history": "History",
+  "history": "Compare",
   "split": "Side by side",
   "inline": "Inline",
   "soft_wrap": "Wrap lines",
@@ -68,7 +68,7 @@
   "repositories": "Repos",
   "recent_repositories": "Recent",
   "branches": "Branches",
-  "head_branch": "HEAD (working branch)",
+  "head_branch": "HEAD",
   "worktree_branch": "Working tree",
   "remote_branch": "Remote",
   "local_branch": "Local",
@@ -107,5 +107,7 @@
   "remote_placeholder": "host:/path/to/repo",
   "remote_invalid": "Enter a remote as host:/path or host:~/path",
   "switch_worktree": "Switch worktree",
-  "fork_point": "Forked from {branch}"
+  "fork_point": "Forked from {branch}",
+  "all_branches": "All branches",
+  "open_in_compare": "Open in Compare"
 }

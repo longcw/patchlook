@@ -25,8 +25,8 @@ use gpui_kit::{
 use patchlook::{
     external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
     git::{
-        Branch, BranchScope, Change, Commit, Comparison, DiffStats, HistoryPage, RefKind,
-        Repository, Worktree, parse_remote,
+        ALL_BRANCHES, Branch, BranchScope, Change, Commit, Comparison, DiffStats, HistoryPage,
+        RefKind, Repository, Worktree, parse_remote,
     },
     graph::{Graph, GraphRow},
     preferences::{Appearance, Language, Layout, Preferences},
@@ -42,6 +42,8 @@ const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 const HISTORY_SEARCH_THRESHOLD: usize = 20;
 const MAX_GRAPH_LANES: usize = 10;
+/// The viewed-branch choice for the checked-out branch; no choice means all branches.
+const HEAD_BRANCH: &str = "HEAD";
 const GRAPH_LANE_WIDTH: f32 = 12.;
 
 gpui_kit::actions!(patchlook, [About, OpenRepository, Refresh, Quit]);
@@ -191,20 +193,29 @@ struct HistoryState {
 }
 
 impl HistoryState {
-    /// Lays the graph out afresh for a newly loaded first page.
-    fn start(&mut self, working_changes: bool, head: bool, scope: Option<BranchScope>) {
-        self.working_changes = working_changes;
-        self.scope = scope;
+    /// Lays the graph out afresh for a newly loaded first page and reveals its selection.
+    fn start(&mut self, start: &HistoryStart) {
+        self.working_changes = start.working_changes;
+        self.scope = start.scope.clone();
+        self.selected = start.selected;
+        self.anchor = start.selected;
+        self.compare = None;
         self.graph = Graph::default();
         self.graph_rows.clear();
         self.working_graph = None;
-        if working_changes
-            && head
-            && let Some(tip) = self.commits.first()
+        if start.working_changes
+            && let Some(head) = &start.head_id
         {
-            self.working_graph = Some(self.graph.expect(&tip.id));
+            self.working_graph = Some(self.graph.expect(head));
         }
         self.extend_graph();
+        if let Some(selected) = self.selected {
+            let index = match selected {
+                Row::Working => 0,
+                Row::Commit(index) => index + usize::from(self.working_changes),
+            };
+            self.scroll.scroll_to_item(index, ScrollStrategy::Center);
+        }
     }
 
     /// A filtered search result has gaps, so it shows no graph.
@@ -301,6 +312,7 @@ pub struct Patchlook {
     worktrees: Vec<Worktree>,
     repository_scroll: UniformListScrollHandle,
     branch_scroll: UniformListScrollHandle,
+    toggled_branch_folders: std::collections::HashSet<String>,
     view: View,
     history: HistoryState,
     repository_preview: bool,
@@ -364,6 +376,7 @@ impl Patchlook {
             worktrees: vec![],
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
+            toggled_branch_folders: Default::default(),
             view: View::History,
             repository_preview: false,
 
@@ -487,14 +500,15 @@ impl Patchlook {
     }
 
     fn viewed_branch_name(&self) -> String {
-        self.viewed_branch()
-            .and_then(|reference| {
-                self.branches
-                    .iter()
-                    .find(|branch| branch.reference == reference)
-            })
-            .map(|branch| branch.name.clone())
-            .unwrap_or_else(|| self.branch.clone())
+        match self.viewed_branch() {
+            None => tr("all_branches").to_owned(),
+            Some(HEAD_BRANCH) => self.branch.clone(),
+            Some(reference) => self
+                .branches
+                .iter()
+                .find(|branch| branch.reference == reference)
+                .map_or_else(|| self.branch.clone(), |branch| branch.name.clone()),
+        }
     }
 
     fn browse_branch(&mut self, reference: Option<String>, cx: &mut Context<Self>) {
@@ -563,8 +577,10 @@ impl Patchlook {
                     let branches = repo.branches()?;
                     let worktrees = repo.worktrees()?;
                     let branch = repo.branch_name()?;
-                    let page = repo.history_filtered(0, reference.as_deref(), &query)?;
-                    let start = first_history_row(&repo, &page, reference.is_none(), preview)?;
+                    let reference = reference.as_deref();
+                    let page =
+                        repo.history_filtered(0, Some(history_revision(reference)), &query)?;
+                    let start = first_history_row(&repo, &page, shows_head(reference), preview)?;
                     anyhow::Ok((repo, branch, (branches, worktrees), page, start))
                 })
                 .await;
@@ -577,6 +593,11 @@ impl Patchlook {
                         this.history.query = query;
                         this.repository_preview = false;
                         this.reset_copy_feedback();
+                        // Entries saved for linked worktrees fold into the repository's one entry.
+                        this.preferences.recent_repositories.retain(|entry| {
+                            entry.path == repo.main
+                                || !worktrees.iter().any(|worktree| worktree.path == entry.path)
+                        });
                         this.preferences.remember_repository(repo.main.clone());
                         let linked = (repo.root != repo.main).then(|| repo.root.clone());
                         this.preferences.set_worktree(&repo.main, linked);
@@ -590,10 +611,7 @@ impl Patchlook {
                         this.history.has_more = page.has_more;
                         this.history.search_available =
                             this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
-                        this.history
-                            .start(start.working_changes, start.head, start.scope);
-                        this.history.selected = start.selected;
-                        this.history.anchor = start.selected;
+                        this.history.start(&start);
                         this.apply_changes(start.prepared, cx);
                     }
                     Err(error) => this.error = Some(format!("{}: {error:#}", tr("load_failed"))),
@@ -713,14 +731,17 @@ impl Patchlook {
         self.history.loading = true;
         self.history.files.error = None;
         let offset = if reset { 0 } else { self.history.commits.len() };
-        let revision = branch
-            .clone()
-            .unwrap_or_else(|| self.history.revision.clone());
+        let reference = match &branch {
+            Some(reference) => reference.as_deref(),
+            None => self.viewed_branch(),
+        };
+        let head = shows_head(reference);
+        let revision = match &branch {
+            Some(reference) => Some(history_revision(reference.as_deref()).to_owned()),
+            None => self.history.revision.clone(),
+        };
         let query = self.history.query.clone();
         let preview = self.view == View::History;
-        let head = branch
-            .as_ref()
-            .map_or(self.viewed_branch().is_none(), Option::is_none);
         self.history.load_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -751,11 +772,7 @@ impl Patchlook {
                                 this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
                         }
                         if let Some(start) = prepared {
-                            this.history
-                                .start(start.working_changes, start.head, start.scope);
-                            this.history.selected = start.selected;
-                            this.history.anchor = start.selected;
-                            this.history.compare = None;
+                            this.history.start(&start);
                             this.apply_changes(start.prepared, cx);
                             if this.view == View::History {
                                 this.ensure_history_preview(cx);
@@ -992,6 +1009,14 @@ impl Patchlook {
             .filter(|index| *index < self.active_files().changes.len())
     }
 
+    /// Repos shows files or a diff in one pane; Compare shows both side by side.
+    fn open_in_compare_button(&self, cx: &mut Context<Self>) -> Button {
+        icon_button("open-in-compare", IconName::ExternalLink, "open_in_compare")
+            .text_color(cx.theme().muted_foreground)
+            .disabled(self.history.selected.is_none())
+            .on_click(cx.listener(|this, _, _, cx| this.switch_view(View::History, cx)))
+    }
+
     fn commit_message_button(&self, cx: &mut Context<Self>) -> Button {
         icon_button(
             "toggle-commit-message",
@@ -1073,12 +1098,35 @@ impl Patchlook {
     }
 }
 
+/// A row of the branch tree.
+enum BranchItem {
+    All,
+    Head,
+    Folder {
+        key: String,
+        name: String,
+        depth: usize,
+        expanded: bool,
+    },
+    Branch {
+        index: usize,
+        name: String,
+        depth: usize,
+    },
+}
+
+#[derive(Default)]
+struct BranchFolder {
+    folders: std::collections::BTreeMap<String, BranchFolder>,
+    branches: Vec<(String, usize)>,
+}
+
 /// What a fresh history page opens with.
 struct HistoryStart {
     working_changes: bool,
     selected: Option<Row>,
-    /// Whether the page shows the checked-out branch, which the working tree sits on.
-    head: bool,
+    /// HEAD's commit when the page shows the checked-out branch, which the working tree sits on.
+    head_id: Option<String>,
     scope: Option<BranchScope>,
     prepared: PreparedChanges,
 }
@@ -1092,10 +1140,16 @@ fn first_history_row(
 ) -> anyhow::Result<HistoryStart> {
     let working = repo.snapshot()?.changes;
     let working_changes = !working.is_empty();
-    let (selected, changes, comparison) = match page.commits.first() {
+    let head_id = repo.head_id()?.filter(|_| head);
+    // Showing the checked-out branch opens on HEAD, which all branches may list lower down.
+    let first = head_id
+        .as_ref()
+        .and_then(|id| page.commits.iter().position(|commit| &commit.id == id))
+        .unwrap_or(0);
+    let (selected, changes, comparison) = match page.commits.get(first) {
         _ if working_changes && head => (Some(Row::Working), working, Comparison::Working),
         Some(commit) => (
-            Some(Row::Commit(0)),
+            Some(Row::Commit(first)),
             repo.commit_changes(commit)?,
             Comparison::Commit(commit.clone()),
         ),
@@ -1108,7 +1162,7 @@ fn first_history_row(
     Ok(HistoryStart {
         working_changes,
         selected,
-        head,
+        head_id,
         scope,
         prepared: PreparedChanges::load(repo, changes, &comparison, preview)?,
     })
@@ -1193,6 +1247,16 @@ fn graph_canvas(
     .flex_none()
     .w(px(GRAPH_LANE_WIDTH * lanes as f32 + 8.))
     .h_full()
+}
+
+/// The revision a viewed-branch choice shows.
+fn history_revision(reference: Option<&str>) -> &str {
+    reference.unwrap_or(ALL_BRANCHES)
+}
+
+/// Whether a viewed-branch choice includes the checked-out branch and its working tree.
+fn shows_head(reference: Option<&str>) -> bool {
+    reference.is_none_or(|reference| reference == HEAD_BRANCH)
 }
 
 /// A worktree's folder name and the branch checked out there.
@@ -1837,12 +1901,95 @@ impl Patchlook {
         )
     }
 
+    /// Flattens the branch tree into visible rows: all branches, the checked-out
+    /// branch, then Local and each remote with their `/`-separated folders.
+    fn branch_items(&self) -> Vec<BranchItem> {
+        if self.repository.is_none() {
+            return Vec::new();
+        }
+        let mut sections: Vec<(String, String, BranchFolder)> = Vec::new();
+        for (index, branch) in self.branches.iter().enumerate() {
+            let (key, label, path) = if branch.remote {
+                let (remote, path) = branch.name.split_once('/').unwrap_or(("", &branch.name));
+                (format!("remote/{remote}"), remote.to_owned(), path)
+            } else {
+                (
+                    "local".to_owned(),
+                    tr("local_branch").to_owned(),
+                    &*branch.name,
+                )
+            };
+            let section = match sections
+                .iter()
+                .position(|(existing, _, _)| *existing == key)
+            {
+                Some(position) => position,
+                None => {
+                    sections.push((key, label, BranchFolder::default()));
+                    sections.len() - 1
+                }
+            };
+            let mut folder = &mut sections[section].2;
+            let mut parts: Vec<_> = path.split('/').collect();
+            let leaf = parts.pop().unwrap_or_default();
+            for part in parts {
+                folder = folder.folders.entry(part.to_owned()).or_default();
+            }
+            folder.branches.push((leaf.to_owned(), index));
+        }
+        let mut items = vec![BranchItem::All, BranchItem::Head];
+        for (key, label, folder) in sections {
+            let expanded = self.branch_folder_expanded(&key);
+            items.push(BranchItem::Folder {
+                key: key.clone(),
+                name: label,
+                depth: 0,
+                expanded,
+            });
+            if expanded {
+                self.push_branch_folder(&mut items, &key, &folder, 1);
+            }
+        }
+        items
+    }
+
+    fn push_branch_folder(
+        &self,
+        items: &mut Vec<BranchItem>,
+        key: &str,
+        folder: &BranchFolder,
+        depth: usize,
+    ) {
+        for (name, child) in &folder.folders {
+            let key = format!("{key}/{name}");
+            let expanded = self.branch_folder_expanded(&key);
+            items.push(BranchItem::Folder {
+                key: key.clone(),
+                name: name.clone(),
+                depth,
+                expanded,
+            });
+            if expanded {
+                self.push_branch_folder(items, &key, child, depth + 1);
+            }
+        }
+        for (name, index) in &folder.branches {
+            items.push(BranchItem::Branch {
+                index: *index,
+                name: name.clone(),
+                depth,
+            });
+        }
+    }
+
+    /// Remote sections start collapsed and everything else expanded; a click flips that.
+    fn branch_folder_expanded(&self, key: &str) -> bool {
+        let collapsed_by_default = key.starts_with("remote/") && !key[7..].contains('/');
+        collapsed_by_default == self.toggled_branch_folders.contains(key)
+    }
+
     fn branch_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let count = if self.repository.is_some() {
-            self.branches.len() + 1
-        } else {
-            0
-        };
+        let count = self.branch_items().len();
         v_flex()
             .size_full()
             .min_h_0()
@@ -1868,8 +2015,12 @@ impl Patchlook {
                             "branches-list",
                             count,
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                let items = this.branch_items();
                                 range
-                                    .map(|index| this.branch_row(index, cx))
+                                    .filter_map(|index| {
+                                        let item = items.get(index)?;
+                                        Some(this.branch_row(index, item, cx))
+                                    })
                                     .collect::<Vec<_>>()
                             }),
                         )
@@ -1881,100 +2032,112 @@ impl Patchlook {
             .into_any_element()
     }
 
-    fn branch_row(&self, index: usize, cx: &mut Context<Self>) -> Div {
-        let branch = index
-            .checked_sub(1)
-            .and_then(|index| self.branches.get(index));
-        let reference = branch.map(|branch| branch.reference.clone());
-        let selected = self.viewed_branch() == reference.as_deref();
-        let name = branch
-            .map(|branch| branch.name.clone())
-            .unwrap_or_else(|| tr("head_branch").to_owned());
-        let group = SharedString::from(format!("branch-row-{index}"));
-        let caption = branch.map(|branch| {
-            if branch.is_head {
-                "worktree_branch"
-            } else if branch.remote {
-                "remote_branch"
-            } else {
-                "local_branch"
-            }
-        });
-        let action_reference = reference.clone();
-        div().h(px(36.)).px_2().pb_1().child(
-            h_flex()
-                .id(("branch-row", index))
-                .group(group.clone())
-                .size_full()
-                .rounded_md()
-                .when(selected, |row| row.bg(cx.theme().secondary_active))
-                .hover(|style| {
-                    style.bg(if selected {
-                        cx.theme().secondary_active
-                    } else {
-                        cx.theme().list_hover
-                    })
-                })
-                .child(
-                    Button::new(("branch", index))
-                        .custom(ButtonCustomVariant::new(cx))
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .justify_start()
-                        .disabled(self.loading)
-                        .tooltip(name.clone())
-                        .accessibility_label(name.clone())
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .min_w_0()
-                                .gap_2()
-                                .child(
-                                    Icon::new(if selected {
-                                        IconName::Eye
-                                    } else {
-                                        IconName::GitBranch
-                                    })
-                                    .xsmall(),
-                                )
-                                .child(div().flex_1().min_w_0().truncate().text_sm().child(name))
-                                .when_some(caption, |row, key| {
-                                    row.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(tr(key)),
-                                    )
-                                }),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.browse_branch(reference.clone(), cx)
-                        })),
+    fn branch_row(&self, index: usize, item: &BranchItem, cx: &mut Context<Self>) -> Div {
+        let (reference, name, depth, icon, caption) = match item {
+            BranchItem::All => (
+                None,
+                tr("all_branches").to_owned(),
+                0,
+                IconName::GitBranch,
+                None,
+            ),
+            BranchItem::Head => (
+                Some(HEAD_BRANCH.to_owned()),
+                self.branch.clone(),
+                0,
+                IconName::GitBranch,
+                Some(tr("head_branch")),
+            ),
+            BranchItem::Folder {
+                name,
+                depth,
+                expanded,
+                ..
+            } => (
+                None,
+                name.clone(),
+                *depth,
+                if *expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                },
+                None,
+            ),
+            BranchItem::Branch { index, name, depth } => {
+                let branch = &self.branches[*index];
+                (
+                    Some(branch.reference.clone()),
+                    name.clone(),
+                    *depth,
+                    IconName::GitBranch,
+                    branch.is_head.then(|| tr("worktree_branch")),
                 )
+            }
+        };
+        let folder = match item {
+            BranchItem::Folder { key, .. } => Some(key.clone()),
+            _ => None,
+        };
+        let selected = folder.is_none() && self.viewed_branch() == reference.as_deref();
+        let tooltip = match item {
+            BranchItem::Branch { index, .. } => self.branches[*index].name.clone(),
+            _ => name.clone(),
+        };
+        div().h(px(30.)).px_2().pb_1().child(
+            Button::new(("branch", index))
+                .custom(
+                    ButtonCustomVariant::new(cx)
+                        .hover(cx.theme().list_hover)
+                        .active(cx.theme().secondary_active),
+                )
+                .selected(selected)
+                .w_full()
+                .h_full()
+                .justify_start()
+                .disabled(self.loading && folder.is_none())
+                .tooltip(tooltip.clone())
+                .accessibility_label(tooltip)
                 .child(
-                    div()
-                        .flex_none()
-                        .pr_1()
-                        .invisible()
-                        .group_hover(group, |style| style.visible())
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_2()
+                        .pl(px(14. * depth as f32))
                         .child(
-                            Button::new(("browse-branch", index))
-                                .icon(IconName::ArrowRight)
+                            Icon::new(if selected { IconName::Eye } else { icon })
                                 .xsmall()
-                                .custom(
-                                    ButtonCustomVariant::new(cx)
-                                        .hover(cx.theme().foreground.opacity(0.12))
-                                        .active(cx.theme().foreground.opacity(0.18)),
-                                )
-                                .disabled(self.loading)
-                                .tooltip(tr("browse_branch"))
-                                .accessibility_label(tr("browse_branch"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.browse_branch(action_reference.clone(), cx)
-                                })),
-                        ),
-                ),
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .when(folder.is_some(), |text| {
+                                    text.text_color(cx.theme().muted_foreground)
+                                })
+                                .child(name),
+                        )
+                        .when_some(caption, |row, caption| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(caption),
+                            )
+                        }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| match &folder {
+                    Some(key) => {
+                        if !this.toggled_branch_folders.remove(key) {
+                            this.toggled_branch_folders.insert(key.clone());
+                        }
+                        cx.notify();
+                    }
+                    None => this.browse_branch(reference.clone(), cx),
+                })),
         )
     }
 
@@ -2017,6 +2180,8 @@ impl Patchlook {
     }
 
     fn diff_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compare_button =
+            (self.view == View::Repositories).then(|| self.open_in_compare_button(cx));
         let file = self.active_files().diff.read(cx).files().first();
         let image = self
             .active_files()
@@ -2059,6 +2224,7 @@ impl Patchlook {
                         })),
                 )
             })
+            .children(compare_button)
             .when_some(path, |row, path| {
                 row.child(self.open_with_menu(cx)).child(file_icon(path))
             })
@@ -2303,7 +2469,10 @@ impl Patchlook {
                             row.child(toolbar_divider(cx))
                                 .child(self.commit_message_button(cx))
                         },
-                    ),
+                    )
+                    .when(self.view == View::Repositories, |row| {
+                        row.child(self.open_in_compare_button(cx))
+                    }),
             )
             .child(if let Some(tree) = tree {
                 div()
@@ -3155,6 +3324,7 @@ mod tests {
             worktrees: vec![],
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
+            toggled_branch_folders: Default::default(),
             view: View::History,
             repository_preview: false,
 
@@ -3906,6 +4076,59 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn all_branches_open_on_head_with_a_folder_tree_of_branches(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        git(root, &["commit", "-qm", "Base", "--allow-empty"]);
+        for branch in ["longc/one", "longc/two"] {
+            git(root, &["switch", "-qc", branch, "main"]);
+            git(root, &["commit", "-qm", branch, "--allow-empty"]);
+        }
+        git(root, &["switch", "-q", "main"]);
+        let (_, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        app.update(cx, |app, cx| app.load(root.canonicalize().unwrap(), cx));
+        cx.run_until_parked();
+        app.update(cx, |app, cx| {
+            // Newer branch commits come first, but the checked-out HEAD is selected.
+            assert_eq!(app.history.commits.len(), 3);
+            let Some(Row::Commit(head)) = app.history.selected else {
+                panic!("HEAD is not selected");
+            };
+            assert_eq!(app.history.commits[head].subject, "Base");
+            let names = |app: &Patchlook| {
+                app.branch_items()
+                    .into_iter()
+                    .map(|item| match item {
+                        BranchItem::All => "*".to_owned(),
+                        BranchItem::Head => "HEAD".to_owned(),
+                        BranchItem::Folder { name, depth, .. } => format!("{depth}{name}/"),
+                        BranchItem::Branch { name, depth, .. } => format!("{depth}{name}"),
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                names(app),
+                ["*", "HEAD", "0Local/", "1longc/", "2one", "2two", "1main"]
+            );
+            app.toggled_branch_folders.insert("local/longc".into());
+            assert_eq!(names(app), ["*", "HEAD", "0Local/", "1longc/", "1main"]);
+            app.browse_branch(Some(HEAD_BRANCH.into()), cx);
+        });
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.history.commits.len(), 1);
+            assert_eq!(app.viewed_branch_name(), "main");
+        });
+    }
+
+    #[gpui_kit::test]
     fn worktrees_share_one_recent_entry_and_reopen_where_left(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let directory = tempfile::tempdir().unwrap();
@@ -3930,7 +4153,13 @@ mod tests {
         let (main, linked) = (main.canonicalize().unwrap(), linked.canonicalize().unwrap());
         let (_, app) = cx.update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-                cx.new(|cx| test_app(window, cx))
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    // Entries saved for a worktree before worktree support fold into one.
+                    app.preferences
+                        .remember_repository(linked.canonicalize().unwrap());
+                    app
+                })
             })
             .unwrap()
         });
@@ -4538,9 +4767,6 @@ mod tests {
             let file_row = window.find("tree-file-0").bounds();
             assert!(repo_row.right() <= commit_row.left());
             assert!(commit_row.right() <= file_row.left());
-            assert!(!window.find(("browse-branch", 1usize)).visible());
-            window.hover(("branch", 1usize), cx);
-            assert!(window.find(("browse-branch", 1usize)).visible());
             // Selecting the message after searching must copy the message, not the input.
             app.update(cx, |app, cx| {
                 app.history.search_available = true;

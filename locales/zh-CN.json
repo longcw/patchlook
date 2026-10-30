@@ -4,7 +4,7 @@
   "open_repository": "打开仓库",
   "remove_repository": "从最近列表移除仓库",
   "refresh": "刷新",
-  "history": "历史",
+  "history": "比较",
   "split": "并排",
   "inline": "行内",
   "soft_wrap": "自动折行",
@@ -68,7 +68,7 @@
   "repositories": "仓库",
   "recent_repositories": "最近打开",
   "branches": "分支",
-  "head_branch": "HEAD（工作区当前分支）",
+  "head_branch": "HEAD",
   "worktree_branch": "工作区",
   "remote_branch": "远程",
   "local_branch": "本地",
@@ -107,5 +107,7 @@
   "remote_placeholder": "host:/仓库/路径",
   "remote_invalid": "请输入 host:/路径 或 host:~/路径 格式的远程地址",
   "switch_worktree": "切换工作树",
-  "fork_point": "从 {branch} 分出"
+  "fork_point": "从 {branch} 分出",
+  "all_branches": "所有分支",
+  "open_in_compare": "在比较中打开"
 }

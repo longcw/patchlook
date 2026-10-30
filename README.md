@@ -22,7 +22,7 @@ Inspect local changes, explore commit history, and compare file versions without
 
 - **Review changes** — inspect staged, unstaged, and untracked files, with added and deleted line counts.
 - **Explore history** — browse branches and commits, or search the full branch history by message or SHA prefix. Uncommitted changes appear as the first history row.
-- **Commit graph** — history draws branch lanes and merges, labels commits with their branches and tags, and dims commits a branch inherited from the default branch, marking where it forked.
+- **Commit graph** — history draws branch lanes and merges across all branches or one, labels commits with their branches and tags, and dims commits a branch inherited from the default branch, marking where it forked. Branches are listed as a tree grouped by `/` folders, local and per remote.
 - **Worktrees** — a repository's linked worktrees share one Recent entry named after the repository; switch between them from the title bar.
 - **Remote repositories** — open `host:/path` or `host:~/path` from the globe button in **Repos** to browse a repository over SSH, like VS Code Remote. Uses your `~/.ssh/config` and key authentication; one shared connection serves every Git call.
 - **Compare any two points** — click a row, then Ctrl/⌘-click another to diff any two commits, or a commit against the working tree.
@@ -47,7 +47,7 @@ Browse [Releases](https://github.com/worldtheater/patchlook/releases) for publis
 ## Getting started
 
 1. Choose **Open repository** and select a local Git repository.
-2. Use **History** to review uncommitted changes (the top row) and inspect commits; Ctrl/⌘-click a second row to compare two points.
+2. Use **Compare** to review uncommitted changes (the top row) and inspect commits; Ctrl/⌘-click a second row to compare two points. In **Repos**, the same selection opens in Compare with the external-link button.
 3. Use **Repos** to switch repositories or browse another branch.
 
 Refresh after making changes in another tool. Branch browsing uses local Git references; fetch updates with your usual Git client.

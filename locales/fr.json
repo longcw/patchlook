@@ -4,7 +4,7 @@
   "open_repository": "Ouvrir un dépôt",
   "remove_repository": "Retirer le dépôt de la liste des dépôts récents",
   "refresh": "Actualiser",
-  "history": "Historique",
+  "history": "Comparer",
   "split": "Côte à côte",
   "inline": "Unifié",
   "soft_wrap": "Retour à la ligne",
@@ -68,7 +68,7 @@
   "repositories": "Dépôts",
   "recent_repositories": "Récents",
   "branches": "Branches",
-  "head_branch": "HEAD (branche de travail)",
+  "head_branch": "HEAD",
   "worktree_branch": "Travail",
   "remote_branch": "Distante",
   "local_branch": "Locale",
@@ -107,5 +107,7 @@
   "remote_placeholder": "hôte:/chemin/du/dépôt",
   "remote_invalid": "Saisissez un distant sous la forme hôte:/chemin ou hôte:~/chemin",
   "switch_worktree": "Changer d'arbre de travail",
-  "fork_point": "Dérivé de {branch}"
+  "fork_point": "Dérivé de {branch}",
+  "all_branches": "Toutes les branches",
+  "open_in_compare": "Ouvrir dans Comparer"
 }

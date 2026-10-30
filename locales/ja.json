@@ -4,7 +4,7 @@
   "open_repository": "リポジトリを開く",
   "remove_repository": "最近のリストからリポジトリを削除",
   "refresh": "再読み込み",
-  "history": "履歴",
+  "history": "比較",
   "split": "左右に並べる",
   "inline": "インライン",
   "soft_wrap": "行を折り返す",
@@ -68,7 +68,7 @@
   "repositories": "リポジトリ",
   "recent_repositories": "最近開いた項目",
   "branches": "ブランチ",
-  "head_branch": "HEAD（作業中のブランチ）",
+  "head_branch": "HEAD",
   "worktree_branch": "作業ツリー",
   "remote_branch": "リモート",
   "local_branch": "ローカル",
@@ -107,5 +107,7 @@
   "remote_placeholder": "host:/path/to/repo",
   "remote_invalid": "リモートは host:/パス または host:~/パス の形式で入力してください",
   "switch_worktree": "ワークツリーを切り替え",
-  "fork_point": "{branch} から分岐"
+  "fork_point": "{branch} から分岐",
+  "all_branches": "すべてのブランチ",
+  "open_in_compare": "比較で開く"
 }

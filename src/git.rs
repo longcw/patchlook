@@ -11,6 +11,8 @@ use std::{
 };
 
 pub const HISTORY_PAGE_SIZE: usize = 100;
+/// A history revision naming every local and remote branch at once.
+pub const ALL_BRANCHES: &str = "*";
 
 #[derive(Clone, Debug)]
 pub struct Repository {
@@ -364,7 +366,7 @@ impl Repository {
 
     /// Splits a branch tip's history into its own commits and the default branch's.
     pub fn branch_scope(&self, tip: &str) -> Result<Option<BranchScope>> {
-        let Some(base) = self.default_branch()? else {
+        let Some(base) = self.default_branch()?.filter(|_| !tip.contains(' ')) else {
             return Ok(None);
         };
         let own = text(output(
@@ -521,21 +523,21 @@ impl Repository {
         revision: Option<&str>,
         query: &str,
     ) -> Result<HistoryPage> {
-        if revision.is_none() && !self.has_head()? {
+        let tips = match revision {
+            // An earlier page already pinned several tips.
+            Some(tips) if tips.contains(' ') => tips.to_owned(),
+            Some(ALL_BRANCHES) => self.branch_tips()?,
+            Some(revision) => self.resolve(revision)?,
+            None if self.has_head()? => self.resolve("HEAD")?,
+            None => String::new(),
+        };
+        if tips.is_empty() {
             return Ok(HistoryPage {
                 commits: vec![],
                 has_more: false,
                 revision: None,
             });
         }
-        let revision = text(output(
-            command(&self.root)
-                .args(["rev-parse", "--verify"])
-                .arg(format!("{}^{{commit}}", revision.unwrap_or("HEAD"))),
-            false,
-        )?)?
-        .trim()
-        .to_owned();
         let query = query.trim().to_lowercase();
         let mut cmd = command(&self.root);
         cmd.args([
@@ -551,7 +553,8 @@ impl Repository {
                 .arg(format!("--skip={offset}"));
         }
         let mut child = cmd
-            .args([revision.as_str(), "--"])
+            .args(tips.split(' '))
+            .arg("--")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -578,8 +581,42 @@ impl Repository {
         Ok(HistoryPage {
             commits,
             has_more,
-            revision: Some(revision),
+            revision: Some(tips),
         })
+    }
+
+    fn resolve(&self, revision: &str) -> Result<String> {
+        Ok(text(output(
+            command(&self.root)
+                .args(["rev-parse", "--verify"])
+                .arg(format!("{revision}^{{commit}}")),
+            false,
+        )?)?
+        .trim()
+        .to_owned())
+    }
+
+    /// The distinct commits that HEAD and every branch point at, space separated.
+    fn branch_tips(&self) -> Result<String> {
+        let mut tips: Vec<String> = Vec::new();
+        if self.has_head()? {
+            tips.push(self.resolve("HEAD")?);
+        }
+        for branch in self.branches()? {
+            if !tips.contains(&branch.revision) {
+                tips.push(branch.revision);
+            }
+        }
+        Ok(tips.join(" "))
+    }
+
+    /// The commit HEAD points at, if any.
+    pub fn head_id(&self) -> Result<Option<String>> {
+        if self.has_head()? {
+            self.resolve("HEAD").map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn changes(&self, comparison: &Comparison) -> Result<Vec<Change>> {
@@ -1154,6 +1191,29 @@ mod tests {
         assert_eq!(scope.own, own);
         // The default branch itself has nothing of its own.
         assert_eq!(repo.branch_scope(&commits[2].id).unwrap(), None);
+    }
+
+    #[test]
+    fn all_branches_history_pins_every_tip_across_pages() {
+        let (_temp, repo) = fixture();
+        fs::write(repo.root.join("file.txt"), "base").unwrap();
+        commit(&repo, "Base");
+        run(&repo.root, &["switch", "-q", "-c", "longc/feature"]);
+        fs::write(repo.root.join("file.txt"), "feature").unwrap();
+        commit(&repo, "Feature");
+        run(&repo.root, &["switch", "-q", "main"]);
+        let page = repo.history(0, Some(ALL_BRANCHES)).unwrap();
+        let subjects: Vec<_> = page.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["Feature", "Base"]);
+        // A later branch does not leak into pages pinned to the earlier tips.
+        fs::write(repo.root.join("file.txt"), "main").unwrap();
+        commit(&repo, "Main");
+        let pinned = repo.history(0, page.revision.as_deref()).unwrap();
+        assert_eq!(pinned.commits.len(), 2);
+        assert_eq!(
+            repo.history(0, Some(ALL_BRANCHES)).unwrap().commits.len(),
+            3
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
   "open_repository": "Repository öffnen",
   "remove_repository": "Repository aus der Liste zuletzt verwendeter Repositorys entfernen",
   "refresh": "Aktualisieren",
-  "history": "Verlauf",
+  "history": "Vergleich",
   "split": "Nebeneinander",
   "inline": "Inline",
   "soft_wrap": "Zeilenumbruch",
@@ -68,7 +68,7 @@
   "repositories": "Repos",
   "recent_repositories": "Zuletzt geöffnet",
   "branches": "Branches",
-  "head_branch": "HEAD (Arbeitsbranch)",
+  "head_branch": "HEAD",
   "worktree_branch": "Arbeitskopie",
   "remote_branch": "Remote",
   "local_branch": "Lokal",
@@ -107,5 +107,7 @@
   "remote_placeholder": "host:/pfad/zum/repo",
   "remote_invalid": "Remote als host:/pfad oder host:~/pfad eingeben",
   "switch_worktree": "Worktree wechseln",
-  "fork_point": "Abgezweigt von {branch}"
+  "fork_point": "Abgezweigt von {branch}",
+  "all_branches": "Alle Branches",
+  "open_in_compare": "Im Vergleich öffnen"
 }

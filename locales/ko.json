@@ -4,7 +4,7 @@
   "open_repository": "저장소 열기",
   "remove_repository": "최근 목록에서 저장소 제거",
   "refresh": "새로 고침",
-  "history": "기록",
+  "history": "비교",
   "split": "나란히 보기",
   "inline": "인라인",
   "soft_wrap": "자동 줄 바꿈",
@@ -68,7 +68,7 @@
   "repositories": "저장소",
   "recent_repositories": "최근 열기",
   "branches": "브랜치",
-  "head_branch": "HEAD (현재 작업 브랜치)",
+  "head_branch": "HEAD",
   "worktree_branch": "작업 트리",
   "remote_branch": "원격",
   "local_branch": "로컬",
@@ -107,5 +107,7 @@
   "remote_placeholder": "host:/path/to/repo",
   "remote_invalid": "원격 주소를 host:/경로 또는 host:~/경로 형식으로 입력하세요",
   "switch_worktree": "워크트리 전환",
-  "fork_point": "{branch}에서 분기"
+  "fork_point": "{branch}에서 분기",
+  "all_branches": "모든 브랜치",
+  "open_in_compare": "비교에서 열기"
 }

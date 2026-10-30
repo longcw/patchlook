@@ -4,7 +4,7 @@
   "open_repository": "Abrir repositório",
   "remove_repository": "Remover repositório da lista de recentes",
   "refresh": "Atualizar",
-  "history": "Histórico",
+  "history": "Comparar",
   "split": "Lado a lado",
   "inline": "Unificado",
   "soft_wrap": "Quebrar linhas",
@@ -68,7 +68,7 @@
   "repositories": "Repos",
   "recent_repositories": "Recentes",
   "branches": "Branches",
-  "head_branch": "HEAD (branch de trabalho)",
+  "head_branch": "HEAD",
   "worktree_branch": "Trabalho",
   "remote_branch": "Remota",
   "local_branch": "Local",
@@ -107,5 +107,7 @@
   "remote_placeholder": "host:/caminho/do/repo",
   "remote_invalid": "Informe um remoto como host:/caminho ou host:~/caminho",
   "switch_worktree": "Alternar worktree",
-  "fork_point": "Derivado de {branch}"
+  "fork_point": "Derivado de {branch}",
+  "all_branches": "Todos os branches",
+  "open_in_compare": "Abrir em Comparar"
 }
