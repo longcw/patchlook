@@ -128,5 +128,7 @@
   "cancel": "キャンセル",
   "opened_pull_request": "プルリクエスト #{number} を開きました",
   "opened_on_github": "GitHub で開きました",
-  "opened_in_zed": "Zed で開きました"
+  "opened_in_zed": "Zed で開きました",
+  "copy_path": "パスをコピー",
+  "copy_full_path": "フルパスをコピー"
 }

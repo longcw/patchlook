@@ -8,6 +8,7 @@ use gpui_kit::{
     base::{TestSupportExt, Tree, TreeItem, TreeState},
     component::{
         ActiveTheme, Icon, Sizable, h_flex,
+        menu::{ContextMenuExt, PopupMenu},
         scroll::{Scrollbar, ScrollbarMode},
         tooltip::Tooltip,
     },
@@ -15,6 +16,9 @@ use gpui_kit::{
     *,
 };
 use patchlook::git::{Area, Change, DiffStats};
+
+/// Builds the right-click menu of the file at an index.
+pub type FileMenu = Rc<dyn Fn(usize, PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -359,6 +363,7 @@ impl ChangeTree {
         show_stats: bool,
         working: bool,
         on_activate_file: impl Fn(&usize, &mut Window, &mut App) + 'static,
+        file_menu: FileMenu,
         cx: &App,
     ) -> impl IntoElement {
         let on_activate_file = Rc::new(on_activate_file);
@@ -400,6 +405,7 @@ impl ChangeTree {
                         let node = &nodes[&item.id];
                         let file_index = node.file_index;
                         let activate = on_activate_file.clone();
+                        let file_menu = file_menu.clone();
                         let move_annotation = node.move_source.as_ref().map(|source| {
                             (
                                 format!("← {source}"),
@@ -539,7 +545,14 @@ impl ChangeTree {
                                     .child(stats_label(node.stats, cx))
                                 },
                             )
-                            .into_any_element()
+                            .map(|row| match file_index {
+                                Some(index) => row
+                                    .context_menu(move |menu, window, cx| {
+                                        file_menu(index, menu, window, cx)
+                                    })
+                                    .into_any_element(),
+                                None => row.into_any_element(),
+                            })
                     }),
             )
             .child(
@@ -730,6 +743,7 @@ mod tests {
                 self.show_stats,
                 false,
                 |_, _, _| {},
+                Rc::new(|_, menu, _, _| menu),
                 cx,
             )
         }

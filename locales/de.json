@@ -128,5 +128,7 @@
   "cancel": "Abbrechen",
   "opened_pull_request": "Pull Request #{number} geöffnet",
   "opened_on_github": "Auf GitHub geöffnet",
-  "opened_in_zed": "In Zed geöffnet"
+  "opened_in_zed": "In Zed geöffnet",
+  "copy_path": "Pfad kopieren",
+  "copy_full_path": "Vollständigen Pfad kopieren"
 }

@@ -128,5 +128,7 @@
   "cancel": "Cancel",
   "opened_pull_request": "Opened pull request #{number}",
   "opened_on_github": "Opened on GitHub",
-  "opened_in_zed": "Opened in Zed"
+  "opened_in_zed": "Opened in Zed",
+  "copy_path": "Copy path",
+  "copy_full_path": "Copy full path"
 }

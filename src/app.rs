@@ -12,7 +12,7 @@ use gpui_kit::{
         button::{Button, ButtonCustomVariant, ButtonVariants},
         diff::{
             Diff, DiffChangeIndicator, DiffFile, DiffHunkSeparator, DiffLinePosition, DiffMode,
-            DiffState,
+            DiffSide, DiffState,
         },
         h_flex,
         input::{Input, InputEvent as TextInputEvent, InputState},
@@ -29,16 +29,19 @@ use patchlook::{
     external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
     git::{
         ALL_BRANCHES, Branch, BranchScope, Change, Commit, Comparison, DiffStats, HistoryPage,
-        RefKind, Repository, Worktree, parse_remote,
+        RefKind, Repository, Worktree, parse_remote, remote_location,
     },
     github,
     graph::{Graph, GraphRow},
+    overview::{MarkKind, Overview, overview},
     preferences::{Appearance, Language, Layout, Preferences, StartView},
     zed,
 };
 use std::{
+    cell::Cell,
     ops::Range,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -61,7 +64,7 @@ enum View {
 }
 
 enum FileContent {
-    Text(Vec<DiffFile>),
+    Text(Vec<DiffFile>, Overview),
     Image(ImageVersions),
 }
 
@@ -73,9 +76,8 @@ impl FileContent {
                 repo.file_versions(change, comparison)?,
             )?))
         } else {
-            Ok(Self::Text(DiffFile::parse(
-                &repo.patch(change, comparison)?,
-            )?))
+            let patch = repo.patch(change, comparison)?;
+            Ok(Self::Text(DiffFile::parse(&patch)?, overview(&patch)))
         }
     }
 }
@@ -122,6 +124,7 @@ struct ChangeState {
     files_loading: bool,
     patch_loading: bool,
     empty_patch: bool,
+    overview: Overview,
     error: Option<String>,
     load_task: Option<Task<()>>,
     patch_task: Option<Task<()>>,
@@ -147,6 +150,7 @@ impl ChangeState {
             files_loading: false,
             patch_loading: false,
             empty_patch: false,
+            overview: Overview::default(),
             error: None,
             load_task: None,
             patch_task: None,
@@ -951,8 +955,14 @@ impl Patchlook {
         match result {
             Ok(content) => {
                 let (diffs, image) = match content {
-                    FileContent::Text(diffs) => (diffs, None),
-                    FileContent::Image(image) => (Vec::new(), Some(image)),
+                    FileContent::Text(diffs, overview) => {
+                        files.overview = overview;
+                        (diffs, None)
+                    }
+                    FileContent::Image(image) => {
+                        files.overview = Overview::default();
+                        (Vec::new(), Some(image))
+                    }
                 };
                 files.empty_patch = diffs.is_empty() && image.is_none();
                 files.image = image.map(|image| cx.new(|_| ImageDiff::new(image)));
@@ -965,6 +975,7 @@ impl Patchlook {
             Err(error) => {
                 files.image = None;
                 files.image_subscription = None;
+                files.overview = Overview::default();
                 files.diff.update(cx, |diff, cx| diff.set_files([], cx));
                 files.error = Some(format!("{}: {error:#}", tr("load_failed")));
             }
@@ -1193,6 +1204,119 @@ impl Patchlook {
             Row::Commit(index) => self.history.commits.get(index).map(|c| c.id.clone()),
             Row::Working => None,
         }
+    }
+
+    /// The right-click menu of a changed file: open it in Zed, or copy its path.
+    fn file_menu(&self, cx: &mut Context<Self>) -> crate::change_tree::FileMenu {
+        let app = cx.entity().downgrade();
+        Rc::new(move |index, menu, _, cx| {
+            let Some(entity) = app.upgrade() else {
+                return menu;
+            };
+            let this = entity.read(cx);
+            let Some(change) = this.active_files().changes.get(index) else {
+                return menu;
+            };
+            let path = change.path.clone();
+            let full = this
+                .repository
+                .as_ref()
+                .map(|repo| match remote_location(&repo.root) {
+                    Some((host, root)) => {
+                        format!("{host}:{}", Path::new(root).join(&path).display())
+                    }
+                    None => repo.root.join(&path).display().to_string(),
+                });
+            let open_app = app.clone();
+            let open_path = path.clone();
+            let copy = |text: String| {
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+                }
+            };
+            menu.item(
+                PopupMenuItem::new(tr("open_file_in_zed")).on_click(move |_, _, cx| {
+                    let _ = open_app.update(cx, |this, cx| {
+                        let file = Some((open_path.clone(), 1));
+                        this.open_in_zed(this.shown_commit(), file, cx)
+                    });
+                }),
+            )
+            .separator()
+            .item(PopupMenuItem::new(tr("copy_path")).on_click(copy(path.display().to_string())))
+            .when_some(full, |menu, full| {
+                menu.item(PopupMenuItem::new(tr("copy_full_path")).on_click(copy(full)))
+            })
+        })
+    }
+
+    /// A strip beside the diff marking each changed block, like an editor's
+    /// overview ruler; a click scrolls to the nearest change.
+    fn overview_ruler(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let overview = self.active_files().overview.clone();
+        if overview.marks.is_empty() || overview.rows == 0 {
+            return None;
+        }
+        let diff = self.active_files().diff.clone();
+        let path = diff.read(cx).files().first()?.path().clone();
+        let colors = [cx.theme().success, cx.theme().danger, cx.theme().blue];
+        let bounds = Rc::new(Cell::new(Bounds::default()));
+        let painted = bounds.clone();
+        let marks = overview.clone();
+        Some(
+            div()
+                .id("change-overview")
+                .flex_none()
+                .w(px(10.))
+                .h_full()
+                .border_l_1()
+                .border_color(cx.theme().border)
+                .cursor_pointer()
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |area, _, window, _| {
+                            painted.set(area);
+                            let scale = area.size.height / marks.rows as f32;
+                            for mark in &marks.marks {
+                                let color = colors[match mark.kind {
+                                    MarkKind::Added => 0,
+                                    MarkKind::Deleted => 1,
+                                    MarkKind::Modified => 2,
+                                }];
+                                // Keep one-line changes visible in long files.
+                                let height = (scale * mark.rows as f32).max(px(2.));
+                                let top = area.top() + scale * mark.start as f32;
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(area.left() + px(2.), top),
+                                        size(area.size.width - px(4.), height),
+                                    ),
+                                    color,
+                                ));
+                            }
+                        },
+                    )
+                    .size_full(),
+                )
+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                    let area = bounds.get();
+                    if area.size.height <= px(0.) {
+                        return;
+                    }
+                    let fraction = (event.position.y - area.top()) / area.size.height;
+                    let row = (fraction.clamp(0., 1.) * overview.rows as f32) as usize;
+                    if let Some(mark) = overview.nearest(row) {
+                        let side = if mark.original {
+                            DiffSide::Original
+                        } else {
+                            DiffSide::Modified
+                        };
+                        let position = DiffLinePosition::new(path.clone(), side, mark.line);
+                        diff.update(cx, |diff, cx| diff.scroll_to_line(position, cx));
+                    }
+                }),
+        )
     }
 
     /// Repos shows files or a diff in one pane; Compare shows both side by side.
@@ -1564,6 +1688,14 @@ fn commit_menu(
                 this.select_row(row, true, cx)
             }))),
     )
+}
+
+/// A right-click opens a context menu, which takes the mouse-up, so a row's
+/// button must never treat it as a press that would then stay drawn.
+fn ignore_right_press(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
+    if event.button == MouseButton::Right {
+        window.prevent_default();
+    }
 }
 
 /// What a finished link lookup opened, from the page it found or Zed when none.
@@ -3009,6 +3141,7 @@ impl Patchlook {
                         self.preferences.show_file_stats,
                         self.shows_areas(),
                         cx.listener(|this, index: &usize, _, cx| this.select_file(*index, cx)),
+                        self.file_menu(cx),
                         cx,
                     ))
                     .into_any_element()
@@ -3023,7 +3156,15 @@ impl Patchlook {
                             self.active_files().changes.len(),
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                                 range
-                                    .map(|index| this.file_row(index, cx))
+                                    .map(|index| {
+                                        let menu = this.file_menu(cx);
+                                        this.file_row(index, cx)
+                                            .id(("file-row", index))
+                                            .capture_any_mouse_down(ignore_right_press)
+                                            .context_menu(move |m, window, cx| {
+                                                menu(index, m, window, cx)
+                                            })
+                                    })
                                     .collect::<Vec<_>>()
                             }),
                         )
@@ -3415,13 +3556,7 @@ impl Patchlook {
                 ),
             )
             .id(("history-row", index))
-            // A right-click opens the menu, which takes the mouse-up, so the row's
-            // button must never treat it as a press that would then stay drawn.
-            .capture_any_mouse_down(|event, window, _| {
-                if event.button == MouseButton::Right {
-                    window.prevent_default();
-                }
-            })
+            .capture_any_mouse_down(ignore_right_press)
             .context_menu({
                 let app = cx.entity().downgrade();
                 move |menu, window, cx| commit_menu(app.clone(), row, menu, window, cx)
@@ -3500,63 +3635,72 @@ impl Patchlook {
             let app = cx.entity().downgrade();
             let hover_app = app.clone();
             let click_app = app.clone();
-            div()
-                .id("diff-lines")
+            h_flex()
                 .size_full()
                 .child(
-                    Diff::new(&self.active_files().diff)
-                        .when_some(
-                            cx.theme().highlight_theme.style.editor_foreground,
-                            |diff, color| diff.text_color(color),
-                        )
-                        .change_indicator(DiffChangeIndicator::Bars)
-                        .header_visible(false)
-                        .soft_wrap(self.preferences.soft_wrap)
-                        .hunk_separator(DiffHunkSeparator::Wave)
-                        .on_line_hover(move |position, _, cx| {
-                            let _ = hover_app.update(cx, |this, _| {
-                                this.hovered_line = position.cloned();
-                            });
-                        })
-                        // Cmd/Ctrl-click opens the line in Zed, like an editor's go-to.
-                        .on_line_click(move |position, event, _, cx| {
-                            let modifiers = event.modifiers();
-                            if modifiers.platform || modifiers.control {
-                                let _ = click_app.update(cx, |this, cx| {
-                                    let target = this.line_target(Some(position));
-                                    if target.is_some() {
-                                        this.open_in_zed(this.shown_commit(), target, cx);
+                    div()
+                        .id("diff-lines")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(
+                            Diff::new(&self.active_files().diff)
+                                .when_some(
+                                    cx.theme().highlight_theme.style.editor_foreground,
+                                    |diff, color| diff.text_color(color),
+                                )
+                                .change_indicator(DiffChangeIndicator::Bars)
+                                .header_visible(false)
+                                .soft_wrap(self.preferences.soft_wrap)
+                                .hunk_separator(DiffHunkSeparator::Wave)
+                                .on_line_hover(move |position, _, cx| {
+                                    let _ = hover_app.update(cx, |this, _| {
+                                        this.hovered_line = position.cloned();
+                                    });
+                                })
+                                // Cmd/Ctrl-click opens the line in Zed, like an editor's go-to.
+                                .on_line_click(move |position, event, _, cx| {
+                                    let modifiers = event.modifiers();
+                                    if modifiers.platform || modifiers.control {
+                                        let _ = click_app.update(cx, |this, cx| {
+                                            let target = this.line_target(Some(position));
+                                            if target.is_some() {
+                                                this.open_in_zed(this.shown_commit(), target, cx);
+                                            }
+                                        });
                                     }
-                                });
-                            }
-                        })
-                        .size_full(),
+                                })
+                                .size_full(),
+                        )
+                        .context_menu(move |menu, _, cx| {
+                            let Some(entity) = app.upgrade() else {
+                                return menu;
+                            };
+                            let this = entity.read(cx);
+                            let line = this.line_target(this.hovered_line.as_ref());
+                            let file = this.line_target(None);
+                            let open = |target: Option<(PathBuf, usize)>| {
+                                let app = app.clone();
+                                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                                    let _ = app.update(cx, |this, cx| {
+                                        this.open_in_zed(this.shown_commit(), target.clone(), cx)
+                                    });
+                                }
+                            };
+                            menu.when_some(
+                                line.clone().filter(|_| this.hovered_line.is_some()),
+                                |menu, target| {
+                                    let label = tr("open_line_in_zed")
+                                        .replace("{line}", &target.1.to_string());
+                                    menu.item(
+                                        PopupMenuItem::new(label).on_click(open(line.clone())),
+                                    )
+                                },
+                            )
+                            .item(PopupMenuItem::new(tr("open_file_in_zed")).on_click(open(file)))
+                        }),
                 )
-                .context_menu(move |menu, _, cx| {
-                    let Some(entity) = app.upgrade() else {
-                        return menu;
-                    };
-                    let this = entity.read(cx);
-                    let line = this.line_target(this.hovered_line.as_ref());
-                    let file = this.line_target(None);
-                    let open = |target: Option<(PathBuf, usize)>| {
-                        let app = app.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                            let _ = app.update(cx, |this, cx| {
-                                this.open_in_zed(this.shown_commit(), target.clone(), cx)
-                            });
-                        }
-                    };
-                    menu.when_some(
-                        line.clone().filter(|_| this.hovered_line.is_some()),
-                        |menu, target| {
-                            let label =
-                                tr("open_line_in_zed").replace("{line}", &target.1.to_string());
-                            menu.item(PopupMenuItem::new(label).on_click(open(line.clone())))
-                        },
-                    )
-                    .item(PopupMenuItem::new(tr("open_file_in_zed")).on_click(open(file)))
-                })
+                .children(self.overview_ruler(cx))
                 .into_any_element()
         } else if self.history.row_count() == 0 {
             if self.history.query.is_empty() {

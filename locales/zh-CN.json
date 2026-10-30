@@ -128,5 +128,7 @@
   "cancel": "取消",
   "opened_pull_request": "已打开拉取请求 #{number}",
   "opened_on_github": "已在 GitHub 上打开",
-  "opened_in_zed": "已在 Zed 中打开"
+  "opened_in_zed": "已在 Zed 中打开",
+  "copy_path": "复制路径",
+  "copy_full_path": "复制完整路径"
 }
