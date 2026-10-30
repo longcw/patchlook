@@ -130,5 +130,6 @@
   "opened_on_github": "GitHub에서 열었습니다",
   "opened_in_zed": "Zed에서 열었습니다",
   "copy_path": "경로 복사",
-  "copy_full_path": "전체 경로 복사"
+  "copy_full_path": "전체 경로 복사",
+  "overview_hint": "이 파일의 변경 사항 · 클릭하면 가장 가까운 변경으로 이동"
 }

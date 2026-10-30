@@ -130,5 +130,6 @@
   "opened_on_github": "Abierto en GitHub",
   "opened_in_zed": "Abierto en Zed",
   "copy_path": "Copiar ruta",
-  "copy_full_path": "Copiar ruta completa"
+  "copy_full_path": "Copiar ruta completa",
+  "overview_hint": "Cambios en este archivo · haz clic para ir al más cercano"
 }

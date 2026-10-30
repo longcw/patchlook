@@ -130,5 +130,6 @@
   "opened_on_github": "GitHub で開きました",
   "opened_in_zed": "Zed で開きました",
   "copy_path": "パスをコピー",
-  "copy_full_path": "フルパスをコピー"
+  "copy_full_path": "フルパスをコピー",
+  "overview_hint": "このファイルの変更 · クリックで最寄りの変更へ移動"
 }

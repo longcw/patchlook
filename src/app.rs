@@ -33,7 +33,7 @@ use patchlook::{
     },
     github,
     graph::{Graph, GraphRow},
-    overview::{MarkKind, Overview, overview},
+    overview::{Layout as OverviewLayout, MarkKind, Overview, overview},
     preferences::{Appearance, Language, Layout, Preferences, StartView},
     zed,
 };
@@ -1250,47 +1250,63 @@ impl Patchlook {
         })
     }
 
-    /// A strip beside the diff marking each changed block, like an editor's
-    /// overview ruler; a click scrolls to the nearest change.
+    /// A strip beside the diff marking each changed block where the diff shows
+    /// it, like an editor's overview ruler; a click scrolls to the nearest change.
     fn overview_ruler(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let overview = self.active_files().overview.clone();
-        if overview.marks.is_empty() || overview.rows == 0 {
+        if overview.marks.is_empty() {
             return None;
         }
         let diff = self.active_files().diff.clone();
-        let path = diff.read(cx).files().first()?.path().clone();
+        let state = diff.read(cx);
+        let path = state.files().first()?.path().clone();
+        let placement = overview.place(OverviewLayout {
+            split: state.mode() == DiffMode::Split,
+            context: state
+                .has_collapsed_context()
+                .then(|| state.context_lines())
+                .flatten(),
+            min_collapsed: state.min_collapsed_lines(),
+        });
+        if placement.rows == 0 {
+            return None;
+        }
         let colors = [cx.theme().success, cx.theme().danger, cx.theme().blue];
         let bounds = Rc::new(Cell::new(Bounds::default()));
         let painted = bounds.clone();
-        let marks = overview.clone();
+        let kinds: Vec<_> = overview.marks.iter().map(|mark| mark.kind).collect();
+        let marks = placement.clone();
         Some(
             div()
                 .id("change-overview")
                 .flex_none()
-                .w(px(10.))
+                .w(px(12.))
                 .h_full()
                 .border_l_1()
                 .border_color(cx.theme().border)
+                .bg(cx.theme().muted.opacity(0.3))
                 .cursor_pointer()
+                .tooltip(|window, cx| Tooltip::new(tr("overview_hint")).build(window, cx))
                 .child(
                     canvas(
                         |_, _, _| {},
                         move |area, _, window, _| {
                             painted.set(area);
                             let scale = area.size.height / marks.rows as f32;
-                            for mark in &marks.marks {
-                                let color = colors[match mark.kind {
+                            for (&(start, rows), kind) in marks.marks.iter().zip(&kinds) {
+                                let color = colors[match kind {
                                     MarkKind::Added => 0,
                                     MarkKind::Deleted => 1,
                                     MarkKind::Modified => 2,
                                 }];
                                 // Keep one-line changes visible in long files.
-                                let height = (scale * mark.rows as f32).max(px(2.));
-                                let top = area.top() + scale * mark.start as f32;
+                                let height = (scale * rows.max(1) as f32).max(px(4.));
+                                let top =
+                                    (area.top() + scale * start as f32).min(area.bottom() - height);
                                 window.paint_quad(fill(
                                     Bounds::new(
-                                        point(area.left() + px(2.), top),
-                                        size(area.size.width - px(4.), height),
+                                        point(area.left() + px(1.), top),
+                                        size(area.size.width - px(2.), height),
                                     ),
                                     color,
                                 ));
@@ -1305,8 +1321,8 @@ impl Patchlook {
                         return;
                     }
                     let fraction = (event.position.y - area.top()) / area.size.height;
-                    let row = (fraction.clamp(0., 1.) * overview.rows as f32) as usize;
-                    if let Some(mark) = overview.nearest(row) {
+                    let row = (fraction.clamp(0., 1.) * placement.rows as f32) as usize;
+                    if let Some(mark) = placement.nearest(row).map(|index| overview.marks[index]) {
                         let side = if mark.original {
                             DiffSide::Original
                         } else {

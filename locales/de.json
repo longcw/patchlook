@@ -130,5 +130,6 @@
   "opened_on_github": "Auf GitHub geöffnet",
   "opened_in_zed": "In Zed geöffnet",
   "copy_path": "Pfad kopieren",
-  "copy_full_path": "Vollständigen Pfad kopieren"
+  "copy_full_path": "Vollständigen Pfad kopieren",
+  "overview_hint": "Änderungen in dieser Datei · Klicken springt zur nächsten"
 }
