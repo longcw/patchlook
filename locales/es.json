@@ -109,5 +109,6 @@
   "switch_worktree": "Cambiar árbol de trabajo",
   "fork_point": "Bifurcado de {branch}",
   "all_branches": "Todas las ramas",
-  "open_in_compare": "Abrir en Comparar"
+  "open_in_compare": "Abrir en Comparar",
+  "search_branches": "Filtrar ramas"
 }

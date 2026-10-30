@@ -229,6 +229,19 @@ impl HistoryState {
         }
     }
 
+    /// The row with the most label and subject text sets the scrollable width.
+    fn widest_row(&self) -> Option<usize> {
+        let offset = usize::from(self.working_changes);
+        self.commits
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, commit)| {
+                let labels: usize = commit.refs.iter().map(|label| label.name.len() + 2).sum();
+                labels + commit.subject.len()
+            })
+            .map(|(index, _)| index + offset)
+    }
+
     fn graph_lanes(&self) -> usize {
         self.graph_rows
             .iter()
@@ -317,6 +330,7 @@ pub struct Patchlook {
     history: HistoryState,
     repository_preview: bool,
     history_search: Entity<InputState>,
+    branch_search: Entity<InputState>,
     /// `host:/path` entry for opening a repository over SSH; shown on demand.
     remote_input: Option<(Entity<InputState>, Subscription)>,
     commit_copied: bool,
@@ -338,7 +352,14 @@ impl Patchlook {
         apply_language(preferences.language, cx);
         let history_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(tr("search_commits_placeholder")));
+        let branch_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr("search_branches")));
         let subscriptions = vec![
+            cx.subscribe(&branch_search, |_, _, event, cx| {
+                if matches!(event, TextInputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&history_search, |this, input, event, cx| {
                 if matches!(event, TextInputEvent::PressEnter { .. })
                     || (matches!(event, TextInputEvent::Change)
@@ -358,6 +379,9 @@ impl Patchlook {
                     apply_language(Language::System, cx);
                     this.history_search.update(cx, |input, cx| {
                         input.set_placeholder(tr("search_commits_placeholder"), window, cx);
+                    });
+                    this.branch_search.update(cx, |input, cx| {
+                        input.set_placeholder(tr("search_branches"), window, cx);
                     });
                 }
             }),
@@ -381,6 +405,7 @@ impl Patchlook {
             repository_preview: false,
 
             history_search,
+            branch_search,
             remote_input: None,
 
             commit_copied: false,
@@ -1093,6 +1118,9 @@ impl Patchlook {
         self.history_search.update(cx, |input, cx| {
             input.set_placeholder(tr("search_commits_placeholder"), window, cx);
         });
+        self.branch_search.update(cx, |input, cx| {
+            input.set_placeholder(tr("search_branches"), window, cx);
+        });
         self.save_preferences();
         cx.notify();
     }
@@ -1166,6 +1194,18 @@ fn first_history_row(
         scope,
         prepared: PreparedChanges::load(repo, changes, &comparison, preview)?,
     })
+}
+
+fn ref_chip(name: String, color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .px_1()
+        .rounded_sm()
+        .text_xs()
+        .whitespace_nowrap()
+        .bg(color.opacity(0.15))
+        .text_color(color)
+        .child(name)
 }
 
 fn ref_color(kind: RefKind, cx: &App) -> Hsla {
@@ -1903,7 +1943,7 @@ impl Patchlook {
 
     /// Flattens the branch tree into visible rows: all branches, the checked-out
     /// branch, then Local and each remote with their `/`-separated folders.
-    fn branch_items(&self) -> Vec<BranchItem> {
+    fn branch_items(&self, cx: &App) -> Vec<BranchItem> {
         if self.repository.is_none() {
             return Vec::new();
         }
@@ -1936,6 +1976,21 @@ impl Patchlook {
                 folder = folder.folders.entry(part.to_owned()).or_default();
             }
             folder.branches.push((leaf.to_owned(), index));
+        }
+        let query = self.branch_search.read(cx).value().trim().to_lowercase();
+        if !query.is_empty() {
+            // Matches are listed flat by full name so a hit inside a folder is never hidden.
+            return self
+                .branches
+                .iter()
+                .enumerate()
+                .filter(|(_, branch)| branch.name.to_lowercase().contains(&query))
+                .map(|(index, branch)| BranchItem::Branch {
+                    index,
+                    name: branch.name.clone(),
+                    depth: 0,
+                })
+                .collect();
         }
         let mut items = vec![BranchItem::All, BranchItem::Head];
         for (key, label, folder) in sections {
@@ -1989,7 +2044,7 @@ impl Patchlook {
     }
 
     fn branch_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.branch_items().len();
+        let count = self.branch_items(cx).len();
         v_flex()
             .size_full()
             .min_h_0()
@@ -2007,6 +2062,26 @@ impl Patchlook {
             )
             .child(
                 div()
+                    .flex_none()
+                    .px_2()
+                    .pb_2()
+                    .on_action(
+                        cx.listener(|this, _: &component::input::Escape, window, cx| {
+                            this.branch_search
+                                .update(cx, |input, cx| input.set_value("", window, cx));
+                            window.focus(&this.focus, cx);
+                        }),
+                    )
+                    .child(
+                        Input::new(&self.branch_search)
+                            .id("branch-search-input")
+                            .aria_label(tr("search_branches"))
+                            .small()
+                            .cleanable(true),
+                    ),
+            )
+            .child(
+                div()
                     .relative()
                     .flex_1()
                     .min_h_0()
@@ -2015,7 +2090,7 @@ impl Patchlook {
                             "branches-list",
                             count,
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                let items = this.branch_items();
+                                let items = this.branch_items(cx);
                                 range
                                     .filter_map(|index| {
                                         let item = items.get(index)?;
@@ -2690,13 +2765,25 @@ impl Patchlook {
                                     .collect::<Vec<_>>()
                             }),
                         )
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        )
+                        .with_width_from_item(self.history.widest_row())
                         .track_scroll(&self.history.scroll)
                         .size_full(),
                     )
                     .child(list_scrollbar(
                         "commits-list-scrollbar",
                         &self.history.scroll,
-                    )),
+                    ))
+                    .child(
+                        div().absolute().inset_0().child(
+                            Scrollbar::horizontal(&self.history.scroll)
+                                .id("commits-list-hscrollbar")
+                                .mode(ScrollbarMode::Scrolling)
+                                .viewport_from_layout(),
+                        ),
+                    ),
             )
             .when(
                 self.history.search_available || !self.history.query.is_empty(),
@@ -2836,23 +2923,16 @@ impl Patchlook {
                                         .w_full()
                                         .min_w_0()
                                         .gap_1()
-                                        .children(labels.into_iter().map(|(name, color)| {
-                                            div()
-                                                .flex_none()
-                                                .max_w(px(120.))
-                                                .truncate()
-                                                .px_1()
-                                                .rounded_sm()
-                                                .text_xs()
-                                                .bg(color.opacity(0.15))
-                                                .text_color(color)
-                                                .child(name)
-                                        }))
+                                        .children(
+                                            labels
+                                                .into_iter()
+                                                .map(|(name, color)| ref_chip(name, color)),
+                                        )
                                         .child(
                                             div()
-                                                .min_w_0()
+                                                .flex_none()
                                                 .text_sm()
-                                                .truncate()
+                                                .whitespace_nowrap()
                                                 .when(row == Row::Working, |text| text.italic())
                                                 .when(inherited, |text| {
                                                     text.text_color(cx.theme().muted_foreground)
@@ -2865,11 +2945,11 @@ impl Patchlook {
                                 )
                                 .child(
                                     h_flex()
-                                        .w_full()
                                         .gap_2()
                                         .text_xs()
+                                        .whitespace_nowrap()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(div().flex_1().truncate().child(author))
+                                        .child(author)
                                         .child(date),
                                 ),
                         )
@@ -3030,12 +3110,17 @@ impl Patchlook {
                             })
                             .child(
                                 h_flex()
-                                    .gap_3()
+                                    .flex_wrap()
+                                    .gap_x_3()
+                                    .gap_y_1()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(self.commit_id_button(commit, cx))
                                     .child(commit.author.clone())
                                     .child(commit.date.clone())
+                                    .children(commit.refs.iter().map(|label| {
+                                        ref_chip(label.name.clone(), ref_color(label.kind, cx))
+                                    }))
                                     .when(commit.parents.len() > 1, |row| {
                                         row.child(tr("first_parent"))
                                     }),
@@ -3154,8 +3239,8 @@ impl Render for Patchlook {
                 h_resizable("repository-history")
                     .child(
                         resizable_panel()
-                            .size(px(320.))
-                            .size_range(px(210.)..px(600.))
+                            .size(px(560.))
+                            .size_range(px(210.)..px(1200.))
                             .child(self.history(cx)),
                     )
                     .child(
@@ -3329,6 +3414,7 @@ mod tests {
             repository_preview: false,
 
             history_search: cx.new(|cx| InputState::new(window, cx)),
+            branch_search: cx.new(|cx| InputState::new(window, cx)),
             remote_input: None,
 
             commit_copied: false,
@@ -4087,40 +4173,49 @@ mod tests {
             git(root, &["commit", "-qm", branch, "--allow-empty"]);
         }
         git(root, &["switch", "-q", "main"]);
-        let (_, app) = cx.update(|cx| {
+        let (handle, app) = cx.update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| test_app(window, cx))
             })
             .unwrap()
         });
+        let names = |app: &Patchlook, cx: &App| {
+            app.branch_items(cx)
+                .into_iter()
+                .map(|item| match item {
+                    BranchItem::All => "*".to_owned(),
+                    BranchItem::Head => "HEAD".to_owned(),
+                    BranchItem::Folder { name, depth, .. } => format!("{depth}{name}/"),
+                    BranchItem::Branch { name, depth, .. } => format!("{depth}{name}"),
+                })
+                .collect::<Vec<_>>()
+        };
         app.update(cx, |app, cx| app.load(root.canonicalize().unwrap(), cx));
         cx.run_until_parked();
-        app.update(cx, |app, cx| {
-            // Newer branch commits come first, but the checked-out HEAD is selected.
-            assert_eq!(app.history.commits.len(), 3);
-            let Some(Row::Commit(head)) = app.history.selected else {
-                panic!("HEAD is not selected");
-            };
-            assert_eq!(app.history.commits[head].subject, "Base");
-            let names = |app: &Patchlook| {
-                app.branch_items()
-                    .into_iter()
-                    .map(|item| match item {
-                        BranchItem::All => "*".to_owned(),
-                        BranchItem::Head => "HEAD".to_owned(),
-                        BranchItem::Folder { name, depth, .. } => format!("{depth}{name}/"),
-                        BranchItem::Branch { name, depth, .. } => format!("{depth}{name}"),
-                    })
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(
-                names(app),
-                ["*", "HEAD", "0Local/", "1longc/", "2one", "2two", "1main"]
-            );
-            app.toggled_branch_folders.insert("local/longc".into());
-            assert_eq!(names(app), ["*", "HEAD", "0Local/", "1longc/", "1main"]);
-            app.browse_branch(Some(HEAD_BRANCH.into()), cx);
-        });
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                // Newer branch commits come first, but the checked-out HEAD is selected.
+                assert_eq!(app.history.commits.len(), 3);
+                let Some(Row::Commit(head)) = app.history.selected else {
+                    panic!("HEAD is not selected");
+                };
+                assert_eq!(app.history.commits[head].subject, "Base");
+                assert_eq!(
+                    names(app, cx),
+                    ["*", "HEAD", "0Local/", "1longc/", "2one", "2two", "1main"]
+                );
+                app.toggled_branch_folders.insert("local/longc".into());
+                assert_eq!(names(app, cx), ["*", "HEAD", "0Local/", "1longc/", "1main"]);
+                // A filter lists matches flat by full name, even inside collapsed folders.
+                app.branch_search
+                    .update(cx, |input, cx| input.set_value("TWO", window, cx));
+                assert_eq!(names(app, cx), ["0longc/two"]);
+                app.branch_search
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                app.browse_branch(Some(HEAD_BRANCH.into()), cx);
+            })
+        })
+        .unwrap();
         cx.run_until_parked();
         app.read_with(cx, |app, _| {
             assert_eq!(app.history.commits.len(), 1);

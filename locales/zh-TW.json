@@ -109,5 +109,6 @@
   "switch_worktree": "切換工作樹",
   "fork_point": "從 {branch} 分出",
   "all_branches": "所有分支",
-  "open_in_compare": "在比較中開啟"
+  "open_in_compare": "在比較中開啟",
+  "search_branches": "篩選分支"
 }

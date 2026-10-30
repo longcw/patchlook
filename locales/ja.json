@@ -109,5 +109,6 @@
   "switch_worktree": "ワークツリーを切り替え",
   "fork_point": "{branch} から分岐",
   "all_branches": "すべてのブランチ",
-  "open_in_compare": "比較で開く"
+  "open_in_compare": "比較で開く",
+  "search_branches": "ブランチを絞り込む"
 }

@@ -543,7 +543,7 @@ impl Repository {
         cmd.args([
             "log",
             "-z",
-            "--date=short",
+            "--date=format-local:%Y-%m-%d %H:%M",
             "--topo-order",
             "--decorate=full",
             "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%P%x00%D%x00%b",

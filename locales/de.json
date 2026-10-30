@@ -109,5 +109,6 @@
   "switch_worktree": "Worktree wechseln",
   "fork_point": "Abgezweigt von {branch}",
   "all_branches": "Alle Branches",
-  "open_in_compare": "Im Vergleich öffnen"
+  "open_in_compare": "Im Vergleich öffnen",
+  "search_branches": "Branches filtern"
 }

@@ -109,5 +109,6 @@
   "switch_worktree": "워크트리 전환",
   "fork_point": "{branch}에서 분기",
   "all_branches": "모든 브랜치",
-  "open_in_compare": "비교에서 열기"
+  "open_in_compare": "비교에서 열기",
+  "search_branches": "브랜치 필터"
 }
