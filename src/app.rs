@@ -356,6 +356,12 @@ pub struct Patchlook {
     /// The diff line under the pointer, which the diff's context menu acts on.
     hovered_line: Option<DiffLinePosition>,
     github_remotes: Vec<github::GitHubRepo>,
+    /// The commit the open worktree has checked out; its files are the ones on disk.
+    head: Option<String>,
+    /// A file saved from a commit's view, to show among the uncommitted changes next.
+    show_saved_file: Option<(PathBuf, Option<DiffLinePosition>)>,
+    /// The file to select once the next file list is in place, and where to scroll it.
+    pending_file: Option<(PathBuf, Option<DiffLinePosition>)>,
     /// A network lookup's progress or result, shown in a floating card.
     link_status: Option<LinkStatus>,
     /// The comment or edit being written under some lines of a working-tree file.
@@ -452,6 +458,9 @@ impl Patchlook {
             branch_tab: BranchTab::Branches,
             hovered_line: None,
             github_remotes: Vec::new(),
+            head: None,
+            show_saved_file: None,
+            pending_file: None,
             link_status: None,
             line_edit: None,
             file_editor: None,
@@ -660,18 +669,25 @@ impl Patchlook {
                     let worktrees = repo.worktrees()?;
                     // A repository without remotes still opens.
                     let remotes = github::remotes(&repo).unwrap_or_default();
+                    let head = repo.head_id()?;
                     let branch = repo.branch_name()?;
                     let reference = reference.as_deref();
                     let page =
                         repo.history_filtered(0, Some(history_revision(reference)), &query)?;
                     let start = first_history_row(&repo, &page, shows_head(reference), preview)?;
-                    anyhow::Ok((repo, branch, (branches, worktrees, remotes), page, start))
+                    anyhow::Ok((
+                        repo,
+                        branch,
+                        (branches, worktrees, remotes, head),
+                        page,
+                        start,
+                    ))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((repo, branch, (branches, worktrees, remotes), page, start)) => {
+                    Ok((repo, branch, (branches, worktrees, remotes, head), page, start)) => {
                         let query = std::mem::take(&mut this.history.query);
                         this.history = HistoryState::new(this.preferences.layout, cx);
                         this.history.query = query;
@@ -693,6 +709,7 @@ impl Patchlook {
                         this.branches = branches;
                         this.worktrees = worktrees;
                         this.github_remotes = remotes;
+                        this.head = head;
                         this.save_preferences();
                         this.history.revision = page.revision;
                         this.history.commits = page.commits;
@@ -701,6 +718,13 @@ impl Patchlook {
                             this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
                         this.history.start(&start);
                         this.apply_changes(start.prepared, cx);
+                        // A file just saved from a commit's view is now an uncommitted change.
+                        if let Some(saved) = this.show_saved_file.take()
+                            && this.history.working_changes
+                        {
+                            this.pending_file = Some(saved);
+                            this.select_row(Row::Working, false, cx);
+                        }
                     }
                     Err(error) => this.error = Some(format!("{}: {error:#}", tr("load_failed"))),
                 }
@@ -976,6 +1000,18 @@ impl Patchlook {
                 tree.reveal_file(0, cx);
             }
             self.apply_file_result(preview, cx);
+        }
+        if let Some((path, scroll)) = self.pending_file.take()
+            && let Some(index) = self
+                .history
+                .files
+                .changes
+                .iter()
+                .position(|c| c.path == path)
+            && self.history.files.selected_file != Some(index)
+        {
+            self.scroll_after_load = scroll;
+            self.select_source_file(index, cx);
         }
     }
 
@@ -1290,10 +1326,16 @@ impl Patchlook {
     fn editable_file(&self) -> Option<&Change> {
         let files = self.active_files();
         let change = files.changes.get(files.selected_file?)?;
+        let head = self.head.as_deref();
+        // The checked-out commit's files are on disk too, so it can be edited from.
         let worktree = match self.current_comparison() {
             Comparison::Working => change.area != Area::Staged,
-            Comparison::Range { target, .. } => target.is_none(),
-            Comparison::Commit(_) => false,
+            Comparison::Range { target: None, .. } => true,
+            Comparison::Range {
+                target: Some(target),
+                ..
+            } => Some(target.as_str()) == head,
+            Comparison::Commit(commit) => Some(commit.id.as_str()) == head,
         };
         (worktree && change.status != 'D').then_some(change)
     }
@@ -1437,11 +1479,26 @@ impl Patchlook {
         cx: &mut Context<Self>,
     ) {
         let message = tr("saved_file").replace("{path}", &saved.path.display().to_string());
+        let path = saved.path.clone();
         self.undo.push(saved);
         self.redo.clear();
         self.show_saved(message, true, cx);
-        self.scroll_after_load = scroll;
-        self.reload_selected_file(cx);
+        match self.current_comparison() {
+            // A commit's view cannot show the edit; move to the uncommitted changes.
+            Comparison::Commit(_)
+            | Comparison::Range {
+                target: Some(_), ..
+            } => {
+                if let Some(repo) = &self.repository {
+                    self.show_saved_file = Some((path, scroll));
+                    self.load_repository(repo.root.clone(), cx);
+                }
+            }
+            _ => {
+                self.scroll_after_load = scroll;
+                self.reload_selected_file(cx);
+            }
+        }
     }
 
     fn show_saved(&mut self, text: String, undo: bool, cx: &mut Context<Self>) {
@@ -4844,6 +4901,9 @@ mod tests {
             branch_tab: BranchTab::Branches,
             hovered_line: None,
             github_remotes: Vec::new(),
+            head: None,
+            show_saved_file: None,
+            pending_file: None,
             link_status: None,
             line_edit: None,
             file_editor: None,
@@ -5841,6 +5901,62 @@ mod tests {
         step(true, cx);
         assert_eq!(file(), "def run():\n    return 4\n");
         app.read_with(cx, |app, _| assert!(app.error.is_some()));
+    }
+
+    #[gpui_kit::test]
+    fn edits_from_the_head_commit_become_uncommitted_changes(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        std::fs::write(root.join("old.txt"), "old\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "Older"]);
+        std::fs::write(root.join("app.py"), "def run():\n    return 1\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "Head"]);
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        let settle = |cx: &mut TestAppContext| {
+            cx.run_until_parked();
+            cx.executor().advance_clock(FILE_SELECTION_DELAY);
+            cx.run_until_parked();
+        };
+        app.update(cx, |app, cx| app.load(root.canonicalize().unwrap(), cx));
+        settle(cx);
+        // Only the checked-out commit's files are on disk to edit.
+        app.update(cx, |app, cx| app.select_row(Row::Commit(1), false, cx));
+        settle(cx);
+        app.read_with(cx, |app, _| assert!(app.editable_file().is_none()));
+        app.update(cx, |app, cx| app.select_row(Row::Commit(0), false, cx));
+        settle(cx);
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.editable_file().is_some());
+                let range = DiffLineRange::new("app.py", DiffSide::Modified, 2, 2);
+                app.start_line_edit(&range, window, cx);
+                let input = app.line_edit.as_ref().unwrap().input.clone();
+                input.update(cx, |input, cx| input.set_value("Why 1?", window, cx));
+                app.save_line_edit(window, cx);
+            })
+        })
+        .unwrap();
+        settle(cx);
+        settle(cx);
+        assert_eq!(
+            std::fs::read_to_string(root.join("app.py")).unwrap(),
+            "def run():\n    return 1\n    # Why 1?\n"
+        );
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.history.selected, Some(Row::Working));
+            let files = app.active_files();
+            let selected = &files.changes[files.selected_file.unwrap()];
+            assert_eq!(selected.path, PathBuf::from("app.py"));
+        });
     }
 
     #[gpui_kit::test]
