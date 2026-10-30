@@ -131,5 +131,12 @@
   "opened_in_zed": "Zed で開きました",
   "copy_path": "パスをコピー",
   "copy_full_path": "フルパスをコピー",
-  "overview_hint": "このファイルの変更 · クリックで最寄りの変更へ移動"
+  "overview_hint": "このファイルの変更 · クリックで最寄りの変更へ移動",
+  "add_comment": "コメント",
+  "edit_lines": "行を編集",
+  "edit_hint": "⌘↩ 保存 · Esc キャンセル",
+  "save": "保存",
+  "comment_placeholder": "ファイルに保存されるレビューコメント",
+  "save_failed": "保存できませんでした",
+  "edit_new_side_only": "新しい側の行を選んでコメントまたは編集してください"
 }

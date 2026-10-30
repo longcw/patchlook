@@ -11,11 +11,11 @@ use gpui_kit::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, Theme, ThemeMode, TitleBar,
         button::{Button, ButtonCustomVariant, ButtonVariants},
         diff::{
-            Diff, DiffChangeIndicator, DiffFile, DiffHunkSeparator, DiffLinePosition, DiffMode,
-            DiffOverviewKind, DiffState,
+            Diff, DiffAnnotation, DiffChangeIndicator, DiffFile, DiffHunkSeparator,
+            DiffLinePosition, DiffLineRange, DiffMode, DiffOverviewKind, DiffSide, DiffState,
         },
         h_flex,
-        input::{Input, InputEvent as TextInputEvent, InputState},
+        input::{Input, InputEvent as TextInputEvent, InputState, Textarea, TextareaState},
         menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
         resizable::{h_resizable, resizable_panel, v_resizable},
         scroll::{Scrollbar, ScrollbarMode},
@@ -26,10 +26,11 @@ use gpui_kit::{
     *,
 };
 use patchlook::{
+    edit::{self, EditKind},
     external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
     git::{
-        ALL_BRANCHES, Branch, BranchScope, Change, Commit, Comparison, DiffStats, HistoryPage,
-        RefKind, Repository, Worktree, parse_remote, remote_location,
+        ALL_BRANCHES, Area, Branch, BranchScope, Change, Commit, Comparison, DiffStats,
+        HistoryPage, RefKind, Repository, Worktree, parse_remote, remote_location,
     },
     github,
     graph::{Graph, GraphRow},
@@ -63,7 +64,8 @@ enum View {
 }
 
 enum FileContent {
-    Text(Vec<DiffFile>),
+    /// The parsed diff and the new side's lines, which with full context are the whole file.
+    Text(Vec<DiffFile>, Vec<String>),
     Image(ImageVersions),
 }
 
@@ -75,9 +77,8 @@ impl FileContent {
                 repo.file_versions(change, comparison)?,
             )?))
         } else {
-            Ok(Self::Text(DiffFile::parse(
-                &repo.patch(change, comparison)?,
-            )?))
+            let patch = repo.patch(change, comparison)?;
+            Ok(Self::Text(DiffFile::parse(&patch)?, new_side_lines(&patch)))
         }
     }
 }
@@ -124,6 +125,7 @@ struct ChangeState {
     files_loading: bool,
     patch_loading: bool,
     empty_patch: bool,
+    new_lines: Vec<String>,
     error: Option<String>,
     load_task: Option<Task<()>>,
     patch_task: Option<Task<()>>,
@@ -149,6 +151,7 @@ impl ChangeState {
             files_loading: false,
             patch_loading: false,
             empty_patch: false,
+            new_lines: Vec::new(),
             error: None,
             load_task: None,
             patch_task: None,
@@ -340,6 +343,9 @@ pub struct Patchlook {
     github_remotes: Vec<github::GitHubRepo>,
     /// A network lookup's progress or result, shown in a floating card.
     link_status: Option<LinkStatus>,
+    /// The comment or edit being written under some lines of a working-tree file.
+    line_edit: Option<LineEdit>,
+    scroll_after_load: Option<DiffLinePosition>,
     view: View,
     history: HistoryState,
     repository_preview: bool,
@@ -427,6 +433,8 @@ impl Patchlook {
             hovered_line: None,
             github_remotes: Vec::new(),
             link_status: None,
+            line_edit: None,
+            scroll_after_load: None,
             view,
             repository_preview: false,
 
@@ -953,8 +961,14 @@ impl Patchlook {
         match result {
             Ok(content) => {
                 let (diffs, image) = match content {
-                    FileContent::Text(diffs) => (diffs, None),
-                    FileContent::Image(image) => (Vec::new(), Some(image)),
+                    FileContent::Text(diffs, lines) => {
+                        files.new_lines = lines;
+                        (diffs, None)
+                    }
+                    FileContent::Image(image) => {
+                        files.new_lines.clear();
+                        (Vec::new(), Some(image))
+                    }
                 };
                 files.empty_patch = diffs.is_empty() && image.is_none();
                 files.image = image.map(|image| cx.new(|_| ImageDiff::new(image)));
@@ -963,6 +977,11 @@ impl Patchlook {
                     .as_ref()
                     .map(|image| cx.observe(image, |_, _, cx| cx.notify()));
                 files.diff.update(cx, |diff, cx| diff.set_files(diffs, cx));
+                // After a save, return to the lines that were edited.
+                if let Some(position) = self.scroll_after_load.take() {
+                    let diff = self.history.files.diff.clone();
+                    diff.update(cx, |diff, cx| diff.scroll_to_line(position, cx));
+                }
             }
             Err(error) => {
                 files.image = None;
@@ -1241,6 +1260,233 @@ impl Patchlook {
         })
     }
 
+    /// The selected file when the diff's new side is its working-tree copy,
+    /// the only version an edit can be saved to.
+    fn editable_file(&self) -> Option<&Change> {
+        let files = self.active_files();
+        let change = files.changes.get(files.selected_file?)?;
+        let worktree = match self.current_comparison() {
+            Comparison::Working => change.area != Area::Staged,
+            Comparison::Range { target, .. } => target.is_none(),
+            Comparison::Commit(_) => false,
+        };
+        (worktree && change.status != 'D').then_some(change)
+    }
+
+    /// Opens a box under the chosen new-side lines for a comment or new text.
+    fn start_line_edit(
+        &mut self,
+        range: &DiffLineRange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(change) = self.editable_file() else {
+            return;
+        };
+        if range.side() != DiffSide::Modified || range.end_side() != DiffSide::Modified {
+            self.error = Some(tr("edit_new_side_only").to_owned());
+            cx.notify();
+            return;
+        }
+        let path = change.path.clone();
+        let (start, end) = (range.start(), range.end());
+        let Some(original) = self
+            .active_files()
+            .new_lines
+            .get(start - 1..end)
+            .map(<[_]>::to_vec)
+        else {
+            return;
+        };
+        let input = cx.new(|cx| {
+            let mut input = TextareaState::new(window, cx).placeholder(tr("comment_placeholder"));
+            input.set_auto_grow(2, 12, cx);
+            input
+        });
+        let subscription = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
+            if let TextInputEvent::PressEnter {
+                secondary: true, ..
+            } = event
+            {
+                this.save_line_edit(window, cx);
+            }
+        });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.line_edit = Some(LineEdit {
+            path,
+            diff_path: range.path().clone(),
+            start,
+            end,
+            original,
+            kind: EditKind::Comment,
+            input,
+            saving: false,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn set_line_edit_kind(&mut self, kind: EditKind, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.line_edit.as_mut() else {
+            return;
+        };
+        if edit.kind == kind {
+            return;
+        }
+        edit.kind = kind;
+        // Editing starts from the lines as they are; a comment starts empty.
+        let text = match kind {
+            EditKind::Replace => edit.original.join("\n"),
+            EditKind::Comment => String::new(),
+        };
+        edit.input.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn cancel_line_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.line_edit = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Writes the edit into the working-tree file, then reloads its diff.
+    fn save_line_edit(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let (Some(repo), Some(edit)) = (self.repository.clone(), self.line_edit.as_mut()) else {
+            return;
+        };
+        let text = edit.input.read(cx).value().to_string();
+        if edit.saving || (edit.kind == EditKind::Comment && text.trim().is_empty()) {
+            return;
+        }
+        edit.saving = true;
+        let (path, start, end, original, kind) = (
+            edit.path.clone(),
+            edit.start,
+            edit.end,
+            edit.original.clone(),
+            edit.kind,
+        );
+        let scroll = DiffLinePosition::new(edit.diff_path.clone(), DiffSide::Modified, start);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let bytes = repo.worktree_file(&path)?;
+                    let content = String::from_utf8(bytes)?;
+                    let edited = edit::apply(&content, &path, start, end, &original, kind, &text)?;
+                    repo.write_worktree_file(&path, edited.as_bytes())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.line_edit = None;
+                        this.scroll_after_load = Some(scroll);
+                        // Reload the saved file's diff in place.
+                        if let Some(index) = this.history.files.selected_file.take() {
+                            this.select_source_file(index, cx);
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(edit) = this.line_edit.as_mut() {
+                            edit.saving = false;
+                        }
+                        this.error = Some(format!("{}: {error:#}", tr("save_failed")));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The box under the edited lines: comment or edit, the text, and its buttons.
+    fn line_edit_box(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(edit) = &self.line_edit else {
+            return div().into_any_element();
+        };
+        let kind_button =
+            |id: &'static str, key: &'static str, kind: EditKind, cx: &mut Context<Self>| {
+                Button::new(id)
+                    .label(tr(key))
+                    .xsmall()
+                    .ghost()
+                    .selected(edit.kind == kind)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_line_edit_kind(kind, window, cx)
+                    }))
+            };
+        v_flex()
+            .id("line-edit")
+            .test_support()
+            .m_2()
+            .p_2()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .on_action(
+                cx.listener(|this, _: &component::input::Escape, window, cx| {
+                    this.cancel_line_edit(window, cx)
+                }),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(kind_button(
+                        "edit-comment",
+                        "add_comment",
+                        EditKind::Comment,
+                        cx,
+                    ))
+                    .child(kind_button(
+                        "edit-lines",
+                        "edit_lines",
+                        EditKind::Replace,
+                        cx,
+                    ))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(tr("edit_hint")),
+                    ),
+            )
+            .child(Textarea::new(&edit.input).aria_label(tr("add_comment")))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("cancel-edit")
+                            .label(tr("cancel"))
+                            .xsmall()
+                            .ghost()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.cancel_line_edit(window, cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        Button::new("save-edit")
+                            .label(tr("save"))
+                            .xsmall()
+                            .primary()
+                            .loading(edit.saving)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.save_line_edit(window, cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// A strip beside the diff, like an editor's overview ruler: changed rows,
     /// rows holding the selected text, and a box around the rows in view.
     /// A click scrolls the diff to that point.
@@ -1436,6 +1682,20 @@ impl BranchTab {
             Self::Worktrees => "search_worktrees",
         }
     }
+}
+
+struct LineEdit {
+    path: PathBuf,
+    /// The diff's name for the file, which annotations are keyed by.
+    diff_path: SharedString,
+    start: usize,
+    end: usize,
+    /// The lines as shown, which must still be in the file when saving.
+    original: Vec<String>,
+    kind: EditKind,
+    input: Entity<TextareaState>,
+    saving: bool,
+    _subscription: Subscription,
 }
 
 struct LinkStatus {
@@ -1707,6 +1967,22 @@ fn ignore_right_press(event: &MouseDownEvent, window: &mut Window, _: &mut App) 
     if event.button == MouseButton::Right {
         window.prevent_default();
     }
+}
+
+/// The new side of a full-context patch: its context and added lines, in order.
+fn new_side_lines(patch: &str) -> Vec<String> {
+    let mut in_hunk = false;
+    let mut lines = Vec::new();
+    for line in patch.lines() {
+        if line.starts_with("@@ ") {
+            in_hunk = true;
+        } else if in_hunk && let Some(text) = line.strip_prefix([' ', '+']) {
+            lines.push(text.to_owned());
+        } else if in_hunk && line.is_empty() {
+            lines.push(String::new());
+        }
+    }
+    lines
 }
 
 /// What a finished link lookup opened, from the page it found or Zed when none.
@@ -3664,6 +3940,37 @@ impl Patchlook {
                                 .header_visible(false)
                                 .soft_wrap(self.preferences.soft_wrap)
                                 .hunk_separator(DiffHunkSeparator::Wave)
+                                .when(self.editable_file().is_some(), |diff| {
+                                    let add_app = app.clone();
+                                    let box_app = app.clone();
+                                    diff.on_add_annotation(move |range, window, cx| {
+                                        let _ = add_app.update(cx, |this, cx| {
+                                            this.start_line_edit(range, window, cx)
+                                        });
+                                    })
+                                    .annotations(self.line_edit.as_ref().map(|edit| {
+                                        DiffAnnotation::line(
+                                            "line-edit",
+                                            DiffLinePosition::new(
+                                                edit.diff_path.clone(),
+                                                DiffSide::Modified,
+                                                edit.end,
+                                            ),
+                                        )
+                                    }))
+                                    .render_annotation(
+                                        move |_, _, cx| {
+                                            box_app
+                                                .upgrade()
+                                                .map(|app| {
+                                                    app.update(cx, |this, cx| {
+                                                        this.line_edit_box(cx)
+                                                    })
+                                                })
+                                                .unwrap_or_else(|| div().into_any_element())
+                                        },
+                                    )
+                                })
                                 .on_line_hover(move |position, _, cx| {
                                     let _ = hover_app.update(cx, |this, _| {
                                         this.hovered_line = position.cloned();
@@ -4144,6 +4451,8 @@ mod tests {
             hovered_line: None,
             github_remotes: Vec::new(),
             link_status: None,
+            line_edit: None,
+            scroll_after_load: None,
             view: View::History,
             repository_preview: false,
 
@@ -5045,6 +5354,60 @@ mod tests {
         cx.executor().advance_clock(LINK_RESULT_DURATION);
         cx.run_until_parked();
         assert_eq!(status(cx), None);
+    }
+
+    #[gpui_kit::test]
+    fn comments_and_edits_save_into_the_working_tree_file(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        std::fs::write(root.join("app.py"), "def run():\n    return 1\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "Initial"]);
+        std::fs::write(root.join("app.py"), "def run():\n    return 2\n").unwrap();
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        app.update(cx, |app, cx| app.load(root.canonicalize().unwrap(), cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(FILE_SELECTION_DELAY);
+        cx.run_until_parked();
+        let edit = |kind, text: &str, cx: &mut TestAppContext| {
+            cx.update_window(handle, |_, window, cx| {
+                app.update(cx, |app, cx| {
+                    assert!(app.editable_file().is_some());
+                    let range = DiffLineRange::new("app.py", DiffSide::Modified, 2, 2);
+                    app.start_line_edit(&range, window, cx);
+                    app.set_line_edit_kind(kind, window, cx);
+                    let input = app.line_edit.as_ref().unwrap().input.clone();
+                    input.update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
+                    app.save_line_edit(window, cx);
+                })
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.executor().advance_clock(FILE_SELECTION_DELAY);
+            cx.run_until_parked();
+        };
+        edit(EditKind::Comment, "Why 2?", cx);
+        let file = || std::fs::read_to_string(root.join("app.py")).unwrap();
+        assert_eq!(file(), "def run():\n    return 2\n    # Why 2?\n");
+        // The reloaded diff shows the comment, so a further edit sees it.
+        app.read_with(cx, |app, _| {
+            assert!(app.line_edit.is_none());
+            assert_eq!(app.active_files().new_lines[2], "    # Why 2?");
+        });
+        edit(EditKind::Replace, "    return 3", cx);
+        assert_eq!(file(), "def run():\n    return 3\n    # Why 2?\n");
+        // An edit made from a stale view is refused.
+        std::fs::write(root.join("app.py"), "def run():\n    return 4\n").unwrap();
+        edit(EditKind::Replace, "    return 5", cx);
+        assert_eq!(file(), "def run():\n    return 4\n");
+        app.read_with(cx, |app, _| assert!(app.error.is_some()));
     }
 
     #[gpui_kit::test]

@@ -131,5 +131,12 @@
   "opened_in_zed": "Aberto no Zed",
   "copy_path": "Copiar caminho",
   "copy_full_path": "Copiar caminho completo",
-  "overview_hint": "Alterações neste arquivo · clique para ir à mais próxima"
+  "overview_hint": "Alterações neste arquivo · clique para ir à mais próxima",
+  "add_comment": "Comentário",
+  "edit_lines": "Editar linhas",
+  "edit_hint": "⌘↩ salvar · Esc cancelar",
+  "save": "Salvar",
+  "comment_placeholder": "Comentário de revisão, salvo no arquivo",
+  "save_failed": "Não foi possível salvar",
+  "edit_new_side_only": "Escolha linhas do lado novo para comentar ou editar"
 }

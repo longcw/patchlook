@@ -131,5 +131,12 @@
   "opened_in_zed": "In Zed geöffnet",
   "copy_path": "Pfad kopieren",
   "copy_full_path": "Vollständigen Pfad kopieren",
-  "overview_hint": "Änderungen in dieser Datei · Klicken springt zur nächsten"
+  "overview_hint": "Änderungen in dieser Datei · Klicken springt zur nächsten",
+  "add_comment": "Kommentar",
+  "edit_lines": "Zeilen bearbeiten",
+  "edit_hint": "⌘↩ speichern · Esc abbrechen",
+  "save": "Speichern",
+  "comment_placeholder": "Review-Kommentar, wird in die Datei geschrieben",
+  "save_failed": "Speichern fehlgeschlagen",
+  "edit_new_side_only": "Wählen Sie Zeilen der neuen Seite zum Kommentieren oder Bearbeiten"
 }

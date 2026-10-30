@@ -131,5 +131,12 @@
   "opened_in_zed": "Zed에서 열었습니다",
   "copy_path": "경로 복사",
   "copy_full_path": "전체 경로 복사",
-  "overview_hint": "이 파일의 변경 사항 · 클릭하면 가장 가까운 변경으로 이동"
+  "overview_hint": "이 파일의 변경 사항 · 클릭하면 가장 가까운 변경으로 이동",
+  "add_comment": "댓글",
+  "edit_lines": "줄 편집",
+  "edit_hint": "⌘↩ 저장 · Esc 취소",
+  "save": "저장",
+  "comment_placeholder": "파일에 저장되는 리뷰 댓글",
+  "save_failed": "저장할 수 없습니다",
+  "edit_new_side_only": "새 버전 쪽의 줄을 선택해 댓글을 달거나 편집하세요"
 }

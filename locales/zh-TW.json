@@ -131,5 +131,12 @@
   "opened_in_zed": "已在 Zed 中開啟",
   "copy_path": "複製路徑",
   "copy_full_path": "複製完整路徑",
-  "overview_hint": "本檔案的變更 · 點擊跳到最近的變更"
+  "overview_hint": "本檔案的變更 · 點擊跳到最近的變更",
+  "add_comment": "評論",
+  "edit_lines": "編輯行",
+  "edit_hint": "⌘↩ 儲存 · Esc 取消",
+  "save": "儲存",
+  "comment_placeholder": "審查意見，將儲存到檔案中",
+  "save_failed": "無法儲存",
+  "edit_new_side_only": "請在新版本一側選擇要評論或編輯的行"
 }

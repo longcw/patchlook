@@ -983,6 +983,30 @@ impl Repository {
         Err(std::io::Error::new(kind, message))
     }
 
+    /// Replaces a working-tree file's content, over SSH for a remote repository.
+    pub fn write_worktree_file(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let Some((host, root)) = remote_location(&self.root) else {
+            return std::fs::write(self.root.join(path), bytes)
+                .context("Cannot write the working-tree file");
+        };
+        let file = Path::new(root).join(path);
+        let mut child = ssh(host)
+            .args(["cat", ">"])
+            .arg(shell_quote(file.as_os_str()))
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        std::io::Write::write_all(&mut child.stdin.take().expect("stdin was piped"), bytes)?;
+        let output = child.wait_with_output()?;
+        ensure!(
+            output.status.success(),
+            "Cannot write {}: {}",
+            file.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        Ok(())
+    }
+
     fn index_file(&self, path: &Path) -> Result<Vec<u8>> {
         let mut object = std::ffi::OsString::from(":");
         object.push(path);
@@ -1360,6 +1384,9 @@ mod tests {
         let patch = repo.patch(&changes[0], &Comparison::Working).unwrap();
         assert!(patch.contains("-before\n+after"));
         assert_eq!(repo.worktree_file(Path::new(name)).unwrap(), b"after\n");
+        repo.write_worktree_file(Path::new(name), b"saved\n")
+            .unwrap();
+        assert_eq!(fs::read(local.root.join(name)).unwrap(), b"saved\n");
         let missing = repo.worktree_file(Path::new("missing")).unwrap_err();
         assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
     }
