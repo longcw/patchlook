@@ -148,5 +148,18 @@
   "unsaved": "未保存",
   "discard": "破棄",
   "close": "閉じる",
-  "edit_file_here": "{line} 行目でファイルを編集"
+  "edit_file_here": "{line} 行目でファイルを編集",
+  "settings": "設定",
+  "zed": "Zed",
+  "zed_command": "Zed コマンド",
+  "zed_command_automatic": "自動（Zed.app または zed コマンド）",
+  "zed_found_app": "Zed.app が見つかりました",
+  "found_at": "{path} が見つかりました",
+  "not_found": "見つかりません",
+  "zed_help": "Cmd/Ctrl クリックと「Zed で開く」に使います。macOS ではアプリだけで十分です。その他ではインストーラーが ~/.local/bin に追加する zed コマンドを使います。別の場所にある場合はここでパスを設定してください。",
+  "download_zed": "Zed をダウンロード",
+  "github_cli": "GitHub CLI",
+  "github_cli_help": "GitHub 上のプルリクエストとコミットを探します。cli.github.com から gh をインストールして `gh auth login` を実行してください。SSH リポジトリではそのホストにインストールします。",
+  "ssh": "SSH",
+  "ssh_help": "リモートリポジトリは ~/.ssh/config と鍵によるログイン（ssh-copy-id）を使います。アプリはパスワード入力に応答できません。ホストには git が必要です。"
 }

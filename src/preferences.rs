@@ -311,6 +311,9 @@ pub struct Preferences {
     pub show_commit_message: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<StartView>,
+    /// Zed's command-line tool, when it is not found automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zed_command: Option<PathBuf>,
 }
 
 fn default_enabled() -> bool {
@@ -332,6 +335,7 @@ impl Default for Preferences {
             soft_wrap: default_enabled(),
             show_commit_message: default_enabled(),
             view: None,
+            zed_command: None,
         }
     }
 }

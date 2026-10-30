@@ -148,5 +148,18 @@
   "unsaved": "未儲存",
   "discard": "捨棄",
   "close": "關閉",
-  "edit_file_here": "在第 {line} 行編輯檔案"
+  "edit_file_here": "在第 {line} 行編輯檔案",
+  "settings": "設定",
+  "zed": "Zed",
+  "zed_command": "Zed 命令",
+  "zed_command_automatic": "自動（Zed.app 或 zed 命令）",
+  "zed_found_app": "已找到 Zed.app",
+  "found_at": "已找到 {path}",
+  "not_found": "未找到",
+  "zed_help": "用於 Cmd/Ctrl 點擊和「在 Zed 中開啟」。在 macOS 上安裝應用即可；其他系統使用 Zed 安裝程式加入 ~/.local/bin 的 zed 命令。若 Zed 安裝在其他位置，請在此設定路徑。",
+  "download_zed": "下載 Zed",
+  "github_cli": "GitHub CLI",
+  "github_cli_help": "用於在 GitHub 上尋找提取請求和提交。從 cli.github.com 安裝 gh 並執行 `gh auth login`；SSH 儲存庫需安裝在其主機上。",
+  "ssh": "SSH",
+  "ssh_help": "遠端儲存庫使用你的 ~/.ssh/config 和金鑰登入（ssh-copy-id），應用無法回答密碼提示。主機上需要有 git。"
 }

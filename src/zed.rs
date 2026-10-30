@@ -1,6 +1,6 @@
-//! Opens repository files in Zed the way the gh-zed helper does: a file link
-//! reuses a window that already holds its project, and otherwise the project
-//! opens first so the file does not land in a window of its own.
+//! Opens repository files in Zed: a file reuses a window that already holds
+//! its project, and otherwise the project opens first so the file does not
+//! land in a window of its own.
 use crate::git::remote_location;
 use anyhow::{Context, Result};
 use std::{
@@ -22,17 +22,113 @@ fn quote(path: &Path) -> String {
     quoted
 }
 
-fn launch(url: &str) -> Result<()> {
-    let program = if cfg!(target_os = "macos") {
-        "open"
+pub const DOWNLOAD_URL: &str = "https://zed.dev/download";
+
+/// How Zed is reached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Launcher {
+    /// `zed://` links through macOS `open`, which reuse Zed's windows best.
+    App,
+    /// Zed's command-line tool.
+    Cli(PathBuf),
+}
+
+/// A program on PATH, as the shell would find it.
+fn on_path(name: &str) -> Option<PathBuf> {
+    let name = if cfg!(windows) {
+        format!("{name}.exe")
     } else {
-        "xdg-open"
+        name.to_owned()
     };
-    let status = Command::new(program)
-        .arg(url)
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|directory| directory.join(&name))
+        .find(|path| path.is_file())
+}
+
+/// Finds Zed: the configured command, then the macOS app, then the command-line
+/// tool on PATH or where Zed's installers put it. A GUI started from the Dock
+/// or a desktop menu has a short PATH, hence the known locations.
+pub fn find(configured: Option<&Path>) -> Option<Launcher> {
+    if let Some(command) = configured {
+        let found = if command.components().count() > 1 {
+            command.is_file().then(|| command.to_path_buf())
+        } else {
+            on_path(&command.to_string_lossy())
+        };
+        return found.map(Launcher::Cli);
+    }
+    let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+    if cfg!(target_os = "macos") {
+        let apps = [
+            PathBuf::from("/Applications"),
+            home.clone()?.join("Applications"),
+        ];
+        let names = ["Zed.app", "Zed Preview.app"];
+        if apps
+            .iter()
+            .any(|dir| names.iter().any(|name| dir.join(name).is_dir()))
+        {
+            return Some(Launcher::App);
+        }
+    }
+    let mut known = vec![
+        PathBuf::from("/usr/local/bin/zed"),
+        PathBuf::from("/opt/homebrew/bin/zed"),
+    ];
+    if let Some(home) = &home {
+        known.push(home.join(".local/bin/zed"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        known.push(PathBuf::from(local).join("Programs/Zed/bin/zed.exe"));
+    }
+    ["zed", "zeditor"]
+        .into_iter()
+        .find_map(on_path)
+        .or_else(|| known.into_iter().find(|path| path.is_file()))
+        .map(Launcher::Cli)
+}
+
+/// What to tell someone whose Zed cannot be found.
+pub fn missing(configured: Option<&Path>) -> anyhow::Error {
+    match configured {
+        Some(command) => anyhow::anyhow!(
+            "The Zed command {} was not found; fix it in Settings or clear it to detect Zed",
+            command.display()
+        ),
+        None => anyhow::anyhow!(
+            "Zed was not found. Install it from {DOWNLOAD_URL}, or set the Zed command in Settings"
+        ),
+    }
+}
+
+/// Opens a target: a `zed://` link for the app, or `path:line` /
+/// `ssh://host/path:line` for the command-line tool.
+fn launch(launcher: &Launcher, host: Option<&str>, path: &Path, line: Option<usize>) -> Result<()> {
+    let line = line.map(|line| format!(":{line}")).unwrap_or_default();
+    let (program, target) = match launcher {
+        Launcher::App => {
+            let base = host.map_or_else(
+                || "zed://file".to_owned(),
+                |host| format!("zed://ssh/{host}"),
+            );
+            (
+                PathBuf::from("open"),
+                format!("{base}{}{line}", quote(path)),
+            )
+        }
+        Launcher::Cli(cli) => {
+            let target = match host {
+                Some(host) => format!("ssh://{host}{}{line}", path.display()),
+                None => format!("{}{line}", path.display()),
+            };
+            (cli.clone(), target)
+        }
+    };
+    let status = Command::new(&program)
+        .arg(&target)
         .status()
-        .with_context(|| format!("Cannot run {program}"))?;
-    anyhow::ensure!(status.success(), "{program} could not open {url}");
+        .with_context(|| format!("Cannot run {}", program.display()))?;
+    anyhow::ensure!(status.success(), "Zed could not open {target}");
     Ok(())
 }
 
@@ -88,27 +184,21 @@ fn open_roots(_: Option<&str>) -> Option<Vec<PathBuf>> {
 
 /// Opens a worktree (local, or `ssh://host/path`), or one of its files at a line, in Zed.
 /// Blocks for up to half a minute while a newly opened project connects.
-pub fn open(worktree: &Path, file: Option<(&Path, usize)>) -> Result<()> {
+pub fn open(launcher: &Launcher, worktree: &Path, file: Option<(&Path, usize)>) -> Result<()> {
     let (host, root) = match remote_location(worktree) {
         Some((host, root)) => (Some(host), PathBuf::from(root)),
         None => (None, worktree.to_path_buf()),
     };
-    let base = host.map_or_else(
-        || "zed://file".to_owned(),
-        |host| format!("zed://ssh/{host}"),
-    );
-    let folder = format!("{base}{}", quote(&root));
     let Some((path, line)) = file else {
-        return launch(&folder);
+        return launch(launcher, host, &root, None);
     };
     let file = root.join(path);
-    let file_url = format!("{base}{}:{line}", quote(&file));
     let holds_file = |roots: &[PathBuf]| roots.iter().any(|open| file.starts_with(open));
     match open_roots(host) {
         Some(roots) if !holds_file(&roots) => {
             // Zed takes one path per request, and a second request before the new
             // window connects starts a competing connection.
-            launch(&folder)?;
+            launch(launcher, host, &root, None)?;
             let deadline = Instant::now() + Duration::from_secs(30);
             while Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(500));
@@ -116,18 +206,28 @@ pub fn open(worktree: &Path, file: Option<(&Path, usize)>) -> Result<()> {
                     if host.is_some() {
                         std::thread::sleep(Duration::from_secs(1));
                     }
-                    return launch(&file_url);
+                    return launch(launcher, host, &file, Some(line));
                 }
             }
             anyhow::bail!("Zed did not open {} in time", root.display())
         }
-        _ => launch(&file_url),
+        _ => launch(launcher, host, &file, Some(line)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_configured_command_must_exist() {
+        let directory = tempfile::tempdir().unwrap();
+        let cli = directory.path().join("zed");
+        assert_eq!(find(Some(&cli)), None);
+        std::fs::write(&cli, "").unwrap();
+        assert_eq!(find(Some(&cli)), Some(Launcher::Cli(cli.clone())));
+        assert!(missing(Some(&cli)).to_string().contains("Settings"));
+    }
 
     #[test]
     fn links_escape_everything_but_slashes() {

@@ -44,6 +44,16 @@ Browse [Releases](https://github.com/worldtheater/patchlook/releases) for publis
 
 [Git](https://git-scm.com/downloads) must be installed and available on `PATH`. macOS release builds are signed and notarized. Linux packages are built on Ubuntu 24.04 and require compatible system libraries.
 
+### What else a new machine needs
+
+Only Git is required. The rest switches on optional features, and the ⚙ Settings panel in the title bar shows which of them it found:
+
+| Feature | Needs | Setup |
+| --- | --- | --- |
+| Remote repositories | `ssh` with key-based login, and Git on the host | Add the host to `~/.ssh/config`, run `ssh-copy-id <host>`, and connect once in a terminal to accept its host key. Load a passphrase-protected key with `ssh-add`; the app cannot answer a password prompt. |
+| Open in Zed (Cmd/Ctrl-click a line) | [Zed](https://zed.dev/download) | On macOS the app is enough. On Linux and Windows the app runs Zed's `zed` command, which its installer adds (to `~/.local/bin` on Linux); if Zed lives elsewhere, set the command in Settings. For a remote repository Zed opens it over SSH itself. |
+| Pull request and commit links | [GitHub CLI](https://cli.github.com) | Install `gh` and run `gh auth login`. For a remote repository, do this on the repository's host, where the app runs `gh`. |
+
 ## Getting started
 
 1. Choose **Open repository** and select a local Git repository.

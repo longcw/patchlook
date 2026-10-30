@@ -377,6 +377,8 @@ pub struct Patchlook {
     repository_preview: bool,
     history_search: Entity<InputState>,
     branch_search: Entity<InputState>,
+    zed_command: Entity<InputState>,
+    settings_open: bool,
     /// `host:/path` entry for opening a repository over SSH; shown on demand.
     remote_input: Option<(Entity<InputState>, Subscription)>,
     commit_copied: bool,
@@ -400,7 +402,20 @@ impl Patchlook {
             cx.new(|cx| InputState::new(window, cx).placeholder(tr("search_commits_placeholder")));
         let branch_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(tr("search_branches")));
+        let zed_command = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder(tr("zed_command_automatic"));
+            if let Some(command) = &preferences.zed_command {
+                input.set_value(command.display().to_string(), window, cx);
+            }
+            input
+        });
         let subscriptions = vec![
+            cx.subscribe(&zed_command, |this, input, event, cx| {
+                if matches!(event, TextInputEvent::Change) {
+                    let value = input.read(cx).value();
+                    this.set_zed_command(&value, cx);
+                }
+            }),
             cx.subscribe(&branch_search, |_, _, event, cx| {
                 if matches!(event, TextInputEvent::Change) {
                     cx.notify();
@@ -472,6 +487,8 @@ impl Patchlook {
 
             history_search,
             branch_search,
+            zed_command,
+            settings_open: false,
             remote_input: None,
 
             commit_copied: false,
@@ -1237,6 +1254,7 @@ impl Patchlook {
         cx: &mut Context<Self>,
     ) {
         let worktrees = self.worktrees.clone();
+        let zed_command = self.preferences.zed_command.clone();
         self.open_link(
             tr("opening_in_zed").to_owned(),
             move |repo| {
@@ -1244,8 +1262,10 @@ impl Patchlook {
                     Some(commit) => repo.worktree_for(commit, &worktrees)?,
                     None => repo.root.clone(),
                 };
+                let launcher = zed::find(zed_command.as_deref())
+                    .ok_or_else(|| zed::missing(zed_command.as_deref()))?;
                 let file = file.as_ref().map(|(path, line)| (path.as_path(), *line));
-                zed::open(&worktree, file).map(|_| None)
+                zed::open(&launcher, &worktree, file).map(|_| None)
             },
             cx,
         );
@@ -1275,6 +1295,105 @@ impl Patchlook {
             Row::Commit(index) => self.history.commits.get(index).map(|c| c.id.clone()),
             Row::Working => None,
         }
+    }
+
+    /// An empty command goes back to finding Zed automatically.
+    fn set_zed_command(&mut self, value: &str, cx: &mut Context<Self>) {
+        let value = value.trim();
+        self.preferences.zed_command = (!value.is_empty()).then(|| value.into());
+        self.save_preferences();
+        cx.notify();
+    }
+
+    /// What the optional integrations need, and whether this machine has it.
+    fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let zed_status = match zed::find(self.preferences.zed_command.as_deref()) {
+            Some(zed::Launcher::App) => tr("zed_found_app").to_owned(),
+            Some(zed::Launcher::Cli(path)) => {
+                tr("found_at").replace("{path}", &path.display().to_string())
+            }
+            None => tr("not_found").to_owned(),
+        };
+        let gh_status = github::local_gh().map_or_else(
+            || tr("not_found").to_owned(),
+            |path| tr("found_at").replace("{path}", &path.display().to_string()),
+        );
+        let section = |title: &'static str, status: String, help: &'static str, cx: &App| {
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(tr(title)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(status),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr(help)),
+                )
+        };
+        v_flex()
+            .id("settings-panel")
+            .test_support()
+            .occlude()
+            .w(px(420.))
+            .p_3()
+            .gap_3()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .shadow_lg()
+            .on_action(
+                cx.listener(|this, _: &component::input::Escape, window, cx| {
+                    this.settings_open = false;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                }),
+            )
+            .child(
+                section("zed", zed_status.clone(), "zed_help", cx)
+                    .child(
+                        Input::new(&self.zed_command)
+                            .aria_label(tr("zed_command"))
+                            .small()
+                            .cleanable(true),
+                    )
+                    .when(zed_status == tr("not_found"), |section| {
+                        section.child(
+                            Button::new("download-zed")
+                                .label(tr("download_zed"))
+                                .xsmall()
+                                .on_click(|_, _, cx| cx.open_url(zed::DOWNLOAD_URL)),
+                        )
+                    }),
+            )
+            .child(section("github_cli", gh_status, "github_cli_help", cx))
+            .child(section("ssh", String::new(), "ssh_help", cx))
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("close-settings")
+                        .label(tr("close"))
+                        .xsmall()
+                        .ghost()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings_open = false;
+                            cx.notify();
+                        })),
+                ),
+            )
     }
 
     /// The right-click menu of a changed file: open it in Zed, or copy its path.
@@ -2846,6 +2965,16 @@ impl Patchlook {
                 )
                 .child(div().flex_1())
                 // Keep the dropdown's click-handling wrapper above the blocker.
+                .child(
+                    icon_button("settings", IconName::Settings, "settings")
+                        .occlude()
+                        .small()
+                        .selected(self.settings_open)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings_open = !this.settings_open;
+                            cx.notify();
+                        })),
+                )
                 .child(div().occlude().child(self.language_menu(cx)))
                 .child({
                     let (icon, current) = appearance_label(self.preferences.appearance);
@@ -4700,6 +4829,15 @@ impl Render for Patchlook {
                     .overflow_hidden()
                     .child(body),
             )
+            .when(self.settings_open, |view| {
+                view.child(
+                    div()
+                        .absolute()
+                        .top(px(40.))
+                        .right_4()
+                        .child(self.settings_panel(cx)),
+                )
+            })
             .when_some(self.link_status.as_ref(), |view, status| {
                 // Floats over the content so showing it never shifts the layout.
                 view.child(
@@ -4876,6 +5014,8 @@ mod tests {
 
             history_search: cx.new(|cx| InputState::new(window, cx)),
             branch_search: cx.new(|cx| InputState::new(window, cx)),
+            zed_command: cx.new(|cx| InputState::new(window, cx)),
+            settings_open: false,
             remote_input: None,
 
             commit_copied: false,
@@ -5862,6 +6002,33 @@ mod tests {
         step(true, cx);
         assert_eq!(file(), "def run():\n    return 4\n");
         app.read_with(cx, |app, _| assert!(app.error.is_some()));
+    }
+
+    #[gpui_kit::test]
+    fn settings_store_the_zed_command_and_clear_back_to_detection(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("settings", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("settings-panel").is_some());
+            app.update(cx, |app, cx| {
+                app.set_zed_command(" /opt/zed/bin/zed ", cx);
+                assert_eq!(
+                    app.preferences.zed_command.as_deref(),
+                    Some(std::path::Path::new("/opt/zed/bin/zed"))
+                );
+                app.set_zed_command("", cx);
+                assert_eq!(app.preferences.zed_command, None);
+            });
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

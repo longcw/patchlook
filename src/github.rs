@@ -64,22 +64,32 @@ pub fn commit_url(remote: &GitHubRepo, sha: &str) -> String {
     )
 }
 
+pub const GH_SETUP: &str = "Install it from https://cli.github.com, then run `gh auth login`.";
+
+/// This machine's `gh`: on PATH, or where Homebrew installs it, since a GUI
+/// launched from the Dock lacks the shell's PATH.
+pub fn local_gh() -> Option<std::path::PathBuf> {
+    let name = if cfg!(windows) { "gh.exe" } else { "gh" };
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .chain(["/opt/homebrew/bin".into(), "/usr/local/bin".into()])
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
+}
+
 /// Runs `gh` where the repository lives, so a remote repository uses the host's login.
 fn gh(repo: &Repository, args: &[&str]) -> Result<Option<String>> {
     let program = if repo.is_remote() {
-        "gh"
+        "gh".into()
     } else {
-        // A GUI launched from the Dock lacks the shell's PATH, so look where Homebrew installs.
-        ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"]
-            .into_iter()
-            .find(|path| std::path::Path::new(path).exists())
-            .unwrap_or("gh")
+        local_gh().unwrap_or_else(|| "gh".into())
     };
     let output = repo
-        .host_command(program)
+        .host_command(&program.to_string_lossy())
         .args(args)
         .output()
-        .context("GitHub CLI (gh) is not installed")?;
+        .with_context(|| format!("GitHub CLI (gh) is not installed. {GH_SETUP}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if output.status.success() {
         return Ok(Some(stdout).filter(|value| !value.is_empty()));
@@ -90,7 +100,7 @@ fn gh(repo: &Repository, args: &[&str]) -> Result<Option<String>> {
         return Ok(None);
     }
     if output.status.code() == Some(127) {
-        anyhow::bail!("GitHub CLI (gh) is not installed on the repository's host");
+        anyhow::bail!("GitHub CLI (gh) is not installed on the repository's host. {GH_SETUP}");
     }
     anyhow::bail!("gh: {stderr}")
 }

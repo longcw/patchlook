@@ -148,5 +148,18 @@
   "unsaved": "Unsaved",
   "discard": "Discard",
   "close": "Close",
-  "edit_file_here": "Edit file at line {line}"
+  "edit_file_here": "Edit file at line {line}",
+  "settings": "Settings",
+  "zed": "Zed",
+  "zed_command": "Zed command",
+  "zed_command_automatic": "Automatic (Zed.app or the zed command)",
+  "zed_found_app": "Found Zed.app",
+  "found_at": "Found {path}",
+  "not_found": "Not found",
+  "zed_help": "Opens files with Cmd/Ctrl-click and Open in Zed. On macOS the app is enough; elsewhere Patchlook runs Zed's zed command, which its installer adds to ~/.local/bin. Set a path here if Zed is installed somewhere else.",
+  "download_zed": "Download Zed",
+  "github_cli": "GitHub CLI",
+  "github_cli_help": "Finds pull requests and commits on GitHub. Install gh from cli.github.com and run `gh auth login`; for an SSH repository, install it on that host.",
+  "ssh": "SSH",
+  "ssh_help": "Remote repositories use your ~/.ssh/config and key-based login (ssh-copy-id), since the app cannot answer a password prompt. The host needs git."
 }

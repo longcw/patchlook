@@ -299,7 +299,23 @@ fn output(command: &mut Command, allow_difference: bool) -> Result<Vec<u8>> {
     if status.success() || (allow_difference && status.code() == Some(1)) {
         Ok(stdout)
     } else {
-        bail!("{}", String::from_utf8_lossy(&stderr).trim());
+        let message = String::from_utf8_lossy(&stderr).trim().to_owned();
+        bail!("{message}{}", ssh_hint(&message));
+    }
+}
+
+/// Setup advice for SSH failures, which a GUI cannot answer with a password prompt.
+fn ssh_hint(message: &str) -> &'static str {
+    if message.contains("Permission denied (publickey")
+        || message.contains("Too many authentication")
+    {
+        "\nPatchlook signs in with SSH keys only: run `ssh-copy-id <host>` (or add your key to the host), and load a passphrase-protected key with `ssh-add`."
+    } else if message.contains("Host key verification failed") {
+        "\nConnect once with `ssh <host>` in a terminal to accept the host key."
+    } else if message.contains("Could not resolve hostname") {
+        "\nCheck the host name, or add it to ~/.ssh/config."
+    } else {
+        ""
     }
 }
 

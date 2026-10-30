@@ -148,5 +148,18 @@
   "unsaved": "저장 안 됨",
   "discard": "버리기",
   "close": "닫기",
-  "edit_file_here": "{line}행에서 파일 편집"
+  "edit_file_here": "{line}행에서 파일 편집",
+  "settings": "설정",
+  "zed": "Zed",
+  "zed_command": "Zed 명령",
+  "zed_command_automatic": "자동 (Zed.app 또는 zed 명령)",
+  "zed_found_app": "Zed.app을 찾았습니다",
+  "found_at": "{path}을(를) 찾았습니다",
+  "not_found": "찾을 수 없음",
+  "zed_help": "Cmd/Ctrl 클릭과 'Zed에서 열기'에 사용합니다. macOS에서는 앱만 있으면 됩니다. 그 외에는 설치 프로그램이 ~/.local/bin에 추가하는 zed 명령을 사용합니다. 다른 위치에 설치했다면 여기에 경로를 지정하세요.",
+  "download_zed": "Zed 다운로드",
+  "github_cli": "GitHub CLI",
+  "github_cli_help": "GitHub에서 풀 리퀘스트와 커밋을 찾습니다. cli.github.com에서 gh를 설치하고 `gh auth login`을 실행하세요. SSH 저장소는 해당 호스트에 설치합니다.",
+  "ssh": "SSH",
+  "ssh_help": "원격 저장소는 ~/.ssh/config와 키 기반 로그인(ssh-copy-id)을 사용합니다. 앱은 비밀번호 입력에 응답할 수 없습니다. 호스트에 git이 필요합니다."
 }
