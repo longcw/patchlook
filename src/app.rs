@@ -1528,6 +1528,17 @@ impl Patchlook {
 
     /// Opens the selected working-tree file in the editor, at `line` (1-based).
     fn open_file_editor(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_file_editor_at(line, None, window, cx);
+    }
+
+    /// Opens the editor at a byte offset of the file when it lies on `line`, else at the line's start.
+    fn open_file_editor_at(
+        &mut self,
+        line: usize,
+        offset: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (Some(repo), Some(change)) = (self.repository.clone(), self.editable_file()) else {
             return;
         };
@@ -1550,10 +1561,13 @@ impl Patchlook {
                     Ok(content) => {
                         let editor =
                             cx.new(|cx| EditorState::new(window, cx).language(language.clone()));
+                        let cursor = offset
+                            .and_then(|offset| cursor_at(&content, offset))
+                            .filter(|position| position.line as usize + 1 == line)
+                            .unwrap_or(Position::new(line.saturating_sub(1) as u32, 0));
                         editor.update(cx, |editor, cx| {
                             editor.set_value(content.clone(), window, cx);
-                            let row = line.saturating_sub(1) as u32;
-                            editor.set_cursor_position(Position::new(row, 0), window, cx);
+                            editor.set_cursor_position(cursor, window, cx);
                         });
                         this.file_editor = Some(FileEditor {
                             path,
@@ -2272,6 +2286,15 @@ fn ignore_right_press(event: &MouseDownEvent, window: &mut Window, _: &mut App) 
     if event.button == MouseButton::Right {
         window.prevent_default();
     }
+}
+
+/// The 0-based line and character column of a byte offset in a file's text.
+fn cursor_at(content: &str, offset: usize) -> Option<Position> {
+    let before = content.get(..offset)?;
+    let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+    let line = before.matches('\n').count();
+    let column = before[line_start..].chars().count();
+    Some(Position::new(line as u32, column as u32))
 }
 
 /// The new side of a full-context patch: its context and added lines, in order.
@@ -4304,7 +4327,15 @@ impl Patchlook {
                                         let _ = click_app.update(cx, |this, cx| {
                                             if this.editable_file().is_some() {
                                                 let line = this.edit_line(Some(position));
-                                                this.open_file_editor(line, window, cx);
+                                                // The character under the pointer becomes the cursor.
+                                                let offset = this
+                                                    .active_files()
+                                                    .diff
+                                                    .read(cx)
+                                                    .source_at(event.position())
+                                                    .filter(|(side, _)| *side == DiffSide::Modified)
+                                                    .map(|(_, offset)| offset);
+                                                this.open_file_editor_at(line, offset, window, cx);
                                             }
                                         });
                                     } else if modifiers.platform || modifiers.control {
@@ -5810,6 +5841,48 @@ mod tests {
         step(true, cx);
         assert_eq!(file(), "def run():\n    return 4\n");
         app.read_with(cx, |app, _| assert!(app.error.is_some()));
+    }
+
+    #[gpui_kit::test]
+    fn double_clicking_a_line_opens_the_editor_at_the_clicked_word(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        std::fs::write(root.join("app.py"), "def run():\n    return 1\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "Initial"]);
+        std::fs::write(root.join("app.py"), "def run():\n    return value\n").unwrap();
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        app.update(cx, |app, cx| app.load(root.canonicalize().unwrap(), cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(FILE_SELECTION_DELAY);
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            for _ in 0..3 {
+                window.render_frame(cx);
+            }
+            // The changed row's new side; its centre falls inside "return value".
+            window
+                .within(("new", 1usize))
+                .double_click("code-content", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        app.read_with(cx, |app, cx| {
+            let editor = app.file_editor.as_ref().expect("the editor opened");
+            let cursor = editor.editor.read(cx).cursor_position();
+            assert_eq!(cursor.line, 1);
+            assert!(
+                cursor.character >= 4,
+                "cursor {cursor:?} is past the indent"
+            );
+        });
     }
 
     #[gpui_kit::test]
