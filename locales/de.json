@@ -104,5 +104,7 @@
   "open_file_failed": "Datei kann nicht geöffnet werden",
   "applications_failed": "Anwendungen können nicht aufgelistet werden",
   "working_branch_tooltip": "Arbeitsverzeichnis-Branch: {branch}",
-  "viewed_branch_tooltip": "Angezeigter Branch: {branch}\nArbeitsverzeichnis-Branch: {worktree}"
+  "viewed_branch_tooltip": "Angezeigter Branch: {branch}\nArbeitsverzeichnis-Branch: {worktree}",
+  "uncommitted_changes": "Nicht committete Änderungen",
+  "compare_hint": "Mit Strg/⌘-Klick auf eine andere Zeile vergleichen"
 }

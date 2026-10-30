@@ -104,5 +104,7 @@
   "open_file_failed": "Não foi possível abrir o arquivo",
   "applications_failed": "Não foi possível listar os aplicativos",
   "working_branch_tooltip": "Branch de trabalho: {branch}",
-  "viewed_branch_tooltip": "Branch em visualização: {branch}\nBranch de trabalho: {worktree}"
+  "viewed_branch_tooltip": "Branch em visualização: {branch}\nBranch de trabalho: {worktree}",
+  "uncommitted_changes": "Alterações não confirmadas",
+  "compare_hint": "Ctrl/⌘-clique em outra linha para comparar"
 }

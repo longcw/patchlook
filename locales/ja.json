@@ -104,5 +104,7 @@
   "open_file_failed": "ファイルを開けません",
   "applications_failed": "アプリケーション一覧を取得できません",
   "working_branch_tooltip": "作業ツリーのブランチ: {branch}",
-  "viewed_branch_tooltip": "閲覧中のブランチ: {branch}\n作業ツリーのブランチ: {worktree}"
+  "viewed_branch_tooltip": "閲覧中のブランチ: {branch}\n作業ツリーのブランチ: {worktree}",
+  "uncommitted_changes": "未コミットの変更",
+  "compare_hint": "Ctrl/⌘ を押しながら別の行をクリックして比較"
 }

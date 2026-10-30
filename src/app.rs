@@ -24,7 +24,7 @@ use gpui_kit::{
 };
 use patchlook::{
     external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
-    git::{Branch, Change, Commit, DiffStats, Repository},
+    git::{Branch, Change, Commit, Comparison, DiffStats, HistoryPage, Repository},
     preferences::{Appearance, Language, Layout, Preferences},
 };
 use std::{
@@ -53,14 +53,16 @@ enum FileContent {
 }
 
 impl FileContent {
-    fn load(repo: &Repository, change: &Change, commit: Option<&Commit>) -> anyhow::Result<Self> {
+    fn load(repo: &Repository, change: &Change, comparison: &Comparison) -> anyhow::Result<Self> {
         if image_format(&change.path).is_some() {
             Ok(Self::Image(ImageVersions::decode(
                 change,
-                repo.file_versions(change, commit)?,
+                repo.file_versions(change, comparison)?,
             )?))
         } else {
-            Ok(Self::Text(DiffFile::parse(&repo.patch(change, commit)?)?))
+            Ok(Self::Text(DiffFile::parse(
+                &repo.patch(change, comparison)?,
+            )?))
         }
     }
 }
@@ -76,14 +78,14 @@ impl PreparedChanges {
     fn load(
         repo: &Repository,
         changes: Vec<Change>,
-        commit: Option<&Commit>,
+        comparison: &Comparison,
         preview: bool,
     ) -> anyhow::Result<Self> {
-        let stats = repo.file_stats(&changes, commit)?;
+        let stats = repo.file_stats(&changes, comparison)?;
         let preview = changes
             .first()
             .filter(|_| preview)
-            .map(|change| FileContent::load(repo, change, commit));
+            .map(|change| FileContent::load(repo, change, comparison));
         Ok(Self {
             changes,
             stats,
@@ -168,10 +170,23 @@ impl ChangeState {
     }
 }
 
+/// A history row; the working tree, when it has changes, sits above the commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Row {
+    Working,
+    Commit(usize),
+}
+
 struct HistoryState {
     files: ChangeState,
     commits: Vec<Commit>,
-    selected_commit: Option<usize>,
+    working_changes: bool,
+    selected: Option<Row>,
+    /// A second row picked with Ctrl/Cmd-click; the files then compare the two rows.
+    compare: Option<Row>,
+    /// The last plainly clicked row, which a Ctrl/Cmd-click compares against
+    /// even while that row's files are still loading.
+    anchor: Option<Row>,
     has_more: bool,
     revision: Option<String>,
     query: String,
@@ -182,11 +197,46 @@ struct HistoryState {
 }
 
 impl HistoryState {
+    fn row_count(&self) -> usize {
+        usize::from(self.working_changes) + self.commits.len()
+    }
+
+    fn row_at(&self, index: usize) -> Row {
+        match index.checked_sub(usize::from(self.working_changes)) {
+            Some(commit) => Row::Commit(commit),
+            None => Row::Working,
+        }
+    }
+
+    fn comparison_for(&self, selected: Row, compare: Option<Row>) -> Comparison {
+        let (base, target) = match (selected, compare) {
+            (Row::Working, None) => return Comparison::Working,
+            (Row::Commit(index), None) => return Comparison::Commit(self.commits[index].clone()),
+            (Row::Working, Some(Row::Commit(base))) | (Row::Commit(base), Some(Row::Working)) => {
+                (base, None)
+            }
+            // The list runs newest first, so the higher index is the older base.
+            (Row::Commit(a), Some(Row::Commit(b))) => (a.max(b), Some(a.min(b))),
+            (Row::Working, Some(Row::Working)) => return Comparison::Working,
+        };
+        Comparison::Range {
+            base: self.commits[base].id.clone(),
+            target: target.map(|index| self.commits[index].id.clone()),
+        }
+    }
+
+    fn comparison(&self) -> Option<Comparison> {
+        Some(self.comparison_for(self.selected?, self.compare))
+    }
+
     fn new(layout: Layout, cx: &mut Context<Patchlook>) -> Self {
         Self {
             files: ChangeState::new(layout, cx),
             commits: Vec::new(),
-            selected_commit: None,
+            working_changes: false,
+            selected: None,
+            compare: None,
+            anchor: None,
             has_more: false,
             revision: None,
             query: String::new(),
@@ -361,13 +411,31 @@ impl Patchlook {
     }
 
     fn current_commit(&self) -> Option<&Commit> {
-        (self.view.source() == Source::History)
-            .then(|| {
-                self.history
-                    .selected_commit
-                    .and_then(|i| self.history.commits.get(i))
-            })
-            .flatten()
+        match (
+            self.view.source(),
+            self.history.selected,
+            self.history.compare,
+        ) {
+            (Source::History, Some(Row::Commit(index)), None) => self.history.commits.get(index),
+            _ => None,
+        }
+    }
+
+    /// Index/worktree listings label each file by area; commit listings by status.
+    fn shows_areas(&self) -> bool {
+        match self.view.source() {
+            Source::Working => true,
+            Source::History => {
+                self.history.selected == Some(Row::Working) && self.history.compare.is_none()
+            }
+        }
+    }
+
+    fn current_comparison(&self) -> Comparison {
+        match self.view.source() {
+            Source::Working => Comparison::Working,
+            Source::History => self.history.comparison().unwrap_or(Comparison::Working),
+        }
     }
 
     fn visible_error(&self) -> Option<&String> {
@@ -439,24 +507,27 @@ impl Patchlook {
                         Source::History => {
                             let branch = repo.branch_name()?;
                             let page = repo.history_filtered(0, reference.as_deref(), &query)?;
-                            let changes = page
-                                .commits
-                                .first()
-                                .map(|commit| repo.commit_changes(commit))
-                                .transpose()?
-                                .unwrap_or_default();
-                            (branch, Some(page), changes)
+                            (branch, Some(page), Vec::new())
                         }
                     };
-                    let commit = page.as_ref().and_then(|page| page.commits.first());
-                    let prepared = PreparedChanges::load(&repo, changes, commit, preview)?;
-                    anyhow::Ok((repo, branch, branches, page, prepared))
+                    let (first, prepared) = match &page {
+                        Some(page) => {
+                            let (first, prepared) =
+                                first_history_row(&repo, page, reference.is_none(), preview)?;
+                            (Some(first), prepared)
+                        }
+                        None => (
+                            None,
+                            PreparedChanges::load(&repo, changes, &Comparison::Working, preview)?,
+                        ),
+                    };
+                    anyhow::Ok((repo, branch, branches, page, first, prepared))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((repo, branch, branches, page, prepared)) => {
+                    Ok((repo, branch, branches, page, first, prepared)) => {
                         this.working = ChangeState::new(this.preferences.layout, cx);
                         let query = std::mem::take(&mut this.history.query);
                         this.history = HistoryState::new(this.preferences.layout, cx);
@@ -474,8 +545,11 @@ impl Patchlook {
                             this.history.has_more = page.has_more;
                             this.history.search_available =
                                 this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
-                            this.history.selected_commit =
-                                (!this.history.commits.is_empty()).then_some(0);
+                        }
+                        if let Some((working_changes, selected)) = first {
+                            this.history.working_changes = working_changes;
+                            this.history.selected = selected;
+                            this.history.anchor = selected;
                         }
                         this.apply_changes(source, prepared, cx);
                     }
@@ -574,7 +648,7 @@ impl Patchlook {
             let result = cx
                 .background_spawn(async move {
                     let snapshot = repo.snapshot()?;
-                    PreparedChanges::load(&repo, snapshot.changes, None, true)
+                    PreparedChanges::load(&repo, snapshot.changes, &Comparison::Working, true)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -633,17 +707,15 @@ impl Patchlook {
             .unwrap_or_else(|| self.history.revision.clone());
         let query = self.history.query.clone();
         let preview = self.view == View::History;
+        let head = branch
+            .as_ref()
+            .map_or(self.viewed_branch().is_none(), Option::is_none);
         self.history.load_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     let page = repo.history_filtered(offset, revision.as_deref(), &query)?;
                     let prepared = if reset {
-                        let commit = page.commits.first();
-                        let changes = commit
-                            .map(|commit| repo.commit_changes(commit))
-                            .transpose()?
-                            .unwrap_or_default();
-                        Some(PreparedChanges::load(&repo, changes, commit, preview)?)
+                        Some(first_history_row(&repo, &page, head, preview)?)
                     } else {
                         None
                     };
@@ -667,9 +739,11 @@ impl Patchlook {
                             this.history.search_available =
                                 this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
                         }
-                        if let Some(prepared) = prepared {
-                            this.history.selected_commit =
-                                (!this.history.commits.is_empty()).then_some(0);
+                        if let Some(((working_changes, selected), prepared)) = prepared {
+                            this.history.working_changes = working_changes;
+                            this.history.selected = selected;
+                            this.history.anchor = selected;
+                            this.history.compare = None;
                             this.apply_changes(Source::History, prepared, cx);
                             if this.view == View::History {
                                 this.ensure_history_preview(cx);
@@ -697,11 +771,18 @@ impl Patchlook {
         self.commit_copied = false;
     }
 
-    fn select_commit(&mut self, index: usize, cx: &mut Context<Self>) {
+    /// A plain click selects one row; a Ctrl/Cmd-click compares it with the selected row.
+    fn select_row(&mut self, row: Row, compare: bool, cx: &mut Context<Self>) {
         if self.loading || self.history.loading {
             return;
         }
-        if self.history.selected_commit == Some(index)
+        let (selected, compare) = match self.history.anchor {
+            Some(anchor) if compare && anchor != row => (anchor, Some(row)),
+            _ => (row, None),
+        };
+        self.history.anchor = Some(selected);
+        if self.history.selected == Some(selected)
+            && self.history.compare == compare
             && self.history.files.loaded
             && !self.history.files.files_loading
             && self.history.files.error.is_none()
@@ -711,7 +792,7 @@ impl Patchlook {
         let Some(repo) = self.repository.clone() else {
             return;
         };
-        let commit = self.history.commits[index].clone();
+        let comparison = self.history.comparison_for(selected, compare);
         self.history.files.cancel_pending();
         self.history.files.files_loading = true;
         self.history.files.error = None;
@@ -719,8 +800,8 @@ impl Patchlook {
         self.history.files.load_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let changes = repo.commit_changes(&commit)?;
-                    PreparedChanges::load(&repo, changes, Some(&commit), preview)
+                    let changes = repo.changes(&comparison)?;
+                    PreparedChanges::load(&repo, changes, &comparison, preview)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -729,7 +810,8 @@ impl Patchlook {
                     Ok(prepared) => {
                         this.reset_copy_feedback();
                         this.repository_preview = false;
-                        this.history.selected_commit = Some(index);
+                        this.history.selected = Some(selected);
+                        this.history.compare = compare;
                         this.apply_changes(Source::History, prepared, cx);
                         if this.view == View::History {
                             this.ensure_history_preview(cx);
@@ -857,12 +939,9 @@ impl Patchlook {
         let Some(repo) = self.repository.clone() else {
             return;
         };
-        let commit = if source == Source::History {
-            self.history
-                .selected_commit
-                .map(|i| self.history.commits[i].clone())
-        } else {
-            None
+        let comparison = match source {
+            Source::Working => Comparison::Working,
+            Source::History => self.history.comparison().unwrap_or(Comparison::Working),
         };
         let files = self.files_for_mut(source);
         let change = files.changes[index].clone();
@@ -889,7 +968,7 @@ impl Patchlook {
                 cx.background_executor().timer(FILE_SELECTION_DELAY).await;
             }
             let result = cx
-                .background_spawn(async move { FileContent::load(&repo, &change, commit.as_ref()) })
+                .background_spawn(async move { FileContent::load(&repo, &change, &comparison) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.files_for_mut(source).patch_loading = false;
@@ -992,6 +1071,28 @@ impl Patchlook {
         self.save_preferences();
         cx.notify();
     }
+}
+
+/// The first history row is the working tree when the checked-out branch has changes.
+fn first_history_row(
+    repo: &Repository,
+    page: &HistoryPage,
+    head: bool,
+    preview: bool,
+) -> anyhow::Result<((bool, Option<Row>), PreparedChanges)> {
+    let working = repo.snapshot()?.changes;
+    let working_changes = !working.is_empty();
+    let (selected, changes, comparison) = match page.commits.first() {
+        _ if working_changes && head => (Some(Row::Working), working, Comparison::Working),
+        Some(commit) => (
+            Some(Row::Commit(0)),
+            repo.commit_changes(commit)?,
+            Comparison::Commit(commit.clone()),
+        ),
+        None => (None, Vec::new(), Comparison::Working),
+    };
+    let prepared = PreparedChanges::load(repo, changes, &comparison, preview)?;
+    Ok(((working_changes, selected), prepared))
 }
 
 fn apply_language(language: Language, cx: &mut App) {
@@ -1214,7 +1315,7 @@ impl Patchlook {
         Some(FileToOpen {
             repository: self.repository.clone()?,
             change: files.changes.get(files.selected_file?)?.clone(),
-            commit: self.current_commit().cloned(),
+            comparison: self.current_comparison(),
         })
     }
 
@@ -2036,7 +2137,7 @@ impl Patchlook {
                             View::History => None,
                         },
                         self.preferences.show_file_stats,
-                        self.view == View::Working,
+                        self.shows_areas(),
                         cx.listener(|this, index: &usize, _, cx| this.select_file(*index, cx)),
                         cx,
                     ))
@@ -2098,7 +2199,7 @@ impl Patchlook {
             .unwrap_or(change.path.as_os_str())
             .to_string_lossy()
             .into_owned();
-        let caption = if self.view == View::Working {
+        let caption = if self.shows_areas() {
             area_label(change.area)
         } else {
             status_label(change.status)
@@ -2195,18 +2296,31 @@ impl Patchlook {
                     .text_color(cx.theme().muted_foreground)
                     .child(tr("commits"))
                     .child(self.history.commits.len().to_string())
-                    .when(self.view != View::History, |row| {
-                        row.child(div().flex_1())
-                            .child(Icon::new(IconName::GitBranch).xsmall())
-                            .child(
-                                div()
-                                    .id("history-branch")
-                                    .test_support()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(self.viewed_branch_name()),
-                            )
-                    }),
+                    .when_some(self.comparison_label(), |row, label| {
+                        row.child(div().flex_1()).child(
+                            div()
+                                .id("history-comparison")
+                                .test_support()
+                                .min_w_0()
+                                .truncate()
+                                .child(label),
+                        )
+                    })
+                    .when(
+                        self.view != View::History && self.history.compare.is_none(),
+                        |row| {
+                            row.child(div().flex_1())
+                                .child(Icon::new(IconName::GitBranch).xsmall())
+                                .child(
+                                    div()
+                                        .id("history-branch")
+                                        .test_support()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(self.viewed_branch_name()),
+                                )
+                        },
+                    ),
             )
             .child(
                 div()
@@ -2216,14 +2330,14 @@ impl Patchlook {
                     .child(
                         uniform_list(
                             "commits-list",
-                            self.history.commits.len() + usize::from(self.history.has_more),
+                            self.history.row_count() + usize::from(self.history.has_more),
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                                 range
                                     .map(|index| {
-                                        if index == this.history.commits.len() {
+                                        if index == this.history.row_count() {
                                             this.load_more_row(cx)
                                         } else {
-                                            this.commit_row(index, cx)
+                                            this.history_row(index, cx)
                                         }
                                     })
                                     .collect::<Vec<_>>()
@@ -2290,8 +2404,25 @@ impl Patchlook {
         )
     }
 
-    fn commit_row(&self, index: usize, cx: &mut Context<Self>) -> Div {
-        let commit = &self.history.commits[index];
+    fn history_row(&self, index: usize, cx: &mut Context<Self>) -> Div {
+        let row = self.history.row_at(index);
+        let (subject, highlights, author, date) = match row {
+            Row::Working => (
+                tr("uncommitted_changes").to_owned(),
+                Vec::new(),
+                tr("worktree_branch").to_owned(),
+                String::new(),
+            ),
+            Row::Commit(commit) => {
+                let commit = &self.history.commits[commit];
+                (
+                    commit.subject.clone(),
+                    self.commit_highlights(commit, &commit.subject, cx),
+                    commit.author.clone(),
+                    commit.date.clone(),
+                )
+            }
+        };
         div().h(px(50.)).px_2().pb_1().child(
             Button::new(("commit", index))
                 .custom(
@@ -2302,35 +2433,56 @@ impl Patchlook {
                 .w_full()
                 .h_full()
                 .justify_start()
-                .selected(self.history.selected_commit == Some(index))
-                .tooltip(commit.subject.clone())
-                .accessibility_label(format!(
-                    "{}, {}, {}",
-                    commit.subject, commit.author, commit.date
-                ))
+                .selected(self.history.selected == Some(row) || self.history.compare == Some(row))
+                .tooltip(format!("{subject}\n{}", tr("compare_hint")))
+                .accessibility_label(format!("{subject}, {author}, {date}"))
                 .child(
                     v_flex()
                         .w_full()
                         .min_w_0()
                         .items_start()
                         .gap_1()
-                        .child(div().text_sm().truncate().child(
-                            StyledText::new(commit.subject.clone()).with_highlights(
-                                self.commit_highlights(commit, &commit.subject, cx),
-                            ),
-                        ))
+                        .child(
+                            div()
+                                .text_sm()
+                                .truncate()
+                                .when(row == Row::Working, |text| text.italic())
+                                .child(StyledText::new(subject).with_highlights(highlights)),
+                        )
                         .child(
                             h_flex()
                                 .w_full()
                                 .gap_2()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(div().flex_1().truncate().child(commit.author.clone()))
-                                .child(commit.date.clone()),
+                                .child(div().flex_1().truncate().child(author))
+                                .child(date),
                         ),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| this.select_commit(index, cx))),
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                    let modifiers = event.modifiers();
+                    this.select_row(row, modifiers.control || modifiers.platform, cx)
+                })),
         )
+    }
+
+    /// Names both sides while two rows are compared.
+    fn comparison_label(&self) -> Option<String> {
+        let Comparison::Range { base, target } = self.history.comparison()? else {
+            return None;
+        };
+        let short = |id: &str| {
+            self.history
+                .commits
+                .iter()
+                .find(|commit| commit.id == id)
+                .map_or_else(|| id.to_owned(), |commit| commit.short_id.clone())
+        };
+        Some(format!(
+            "{} → {}",
+            short(&base),
+            target.map_or_else(|| tr("worktree_branch").to_owned(), |id| short(&id))
+        ))
     }
 
     fn commit_highlights(
@@ -2366,7 +2518,7 @@ impl Patchlook {
             self.message("loading", None, cx)
         } else if self.view == View::Repositories
             && !self.repository_preview
-            && self.history.selected_commit.is_some()
+            && self.history.selected.is_some()
         {
             self.files(cx)
         } else if self.active_files().patch_loading
@@ -2704,7 +2856,7 @@ mod tests {
                 status: 'A',
                 area: Area::Untracked,
             }],
-            None,
+            &Comparison::Working,
             true,
         )
         .unwrap();
@@ -3430,6 +3582,87 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn history_lists_the_working_tree_and_compares_any_two_rows(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        for content in ["one\n", "two\n", "three\n"] {
+            std::fs::write(root.join("file.txt"), content).unwrap();
+            git(root, &["add", "."]);
+            git(root, &["commit", "-qm", content.trim()]);
+        }
+        std::fs::write(root.join("new.txt"), "new\n").unwrap();
+        let repo = Repository::open(root).unwrap();
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.view = View::History;
+                    app.repository = Some(repo.clone());
+                    app.ensure_view_loaded(cx);
+                    app
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        let paths = |cx: &mut TestAppContext| {
+            app.read_with(cx, |app, _| {
+                let files = &app.history.files.changes;
+                files
+                    .iter()
+                    .map(|change| change.path.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        app.read_with(cx, |app, _| {
+            assert!(app.history.working_changes);
+            assert_eq!(app.history.row_count(), 4);
+            assert_eq!(app.history.selected, Some(Row::Working));
+        });
+        assert_eq!(paths(cx), [PathBuf::from("new.txt")]);
+
+        // Picking the newer row first still diffs from the older commit.
+        app.update(cx, |app, cx| {
+            app.select_row(Row::Commit(0), false, cx);
+            app.select_row(Row::Commit(2), true, cx);
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let app = app.read(cx);
+            let commits = &app.history.commits;
+            assert_eq!(
+                app.history.comparison(),
+                Some(Comparison::Range {
+                    base: commits[2].id.clone(),
+                    target: Some(commits[0].id.clone()),
+                })
+            );
+            let label = format!("{} → {}", commits[2].short_id, commits[0].short_id);
+            assert!(window.try_find("history-comparison").is_some());
+            assert_eq!(app.comparison_label(), Some(label));
+            assert!(app.current_commit().is_none());
+        })
+        .unwrap();
+        assert_eq!(paths(cx), [PathBuf::from("file.txt")]);
+
+        app.update(cx, |app, cx| {
+            app.select_row(Row::Commit(2), false, cx);
+            app.select_row(Row::Working, true, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            paths(cx),
+            [PathBuf::from("file.txt"), PathBuf::from("new.txt")]
+        );
+        app.update(cx, |app, cx| app.select_row(Row::Commit(1), false, cx));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| assert_eq!(app.history.compare, None));
+    }
+
+    #[gpui_kit::test]
     fn tabs_retain_snapshots_and_route_pending_results_to_their_owner(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let directory = tempfile::tempdir().unwrap();
@@ -3470,7 +3703,9 @@ mod tests {
             app.update(cx, |app, cx| {
                 assert!(app.working.loaded && app.history.files.loaded);
                 assert_eq!(app.working.changes[0].path, PathBuf::from("alpha.rs"));
-                assert_eq!(app.history.files.changes[0].path, PathBuf::from("beta.rs"));
+                // A dirty working tree is the first history row and opens selected.
+                assert_eq!(app.history.selected, Some(Row::Working));
+                assert_eq!(app.history.files.changes[0].path, PathBuf::from("alpha.rs"));
                 assert_eq!(app.history.files.selected_file, None);
                 assert_eq!(app.history.commits.len(), 2);
                 app.switch_view(View::History, cx);
@@ -3489,7 +3724,7 @@ mod tests {
             );
             assert_eq!(
                 app.history.files.diff.read(cx).files()[0].path().as_str(),
-                "beta.rs"
+                "alpha.rs"
             );
             assert!(!app.history.files.patch_loading);
         });
@@ -3524,7 +3759,7 @@ mod tests {
                 assert_eq!(app.working.diff.entity_id(), working_diff);
                 assert_eq!(app.history.files.diff.entity_id(), history_diff);
                 assert_eq!(app.history.revision, revision);
-                assert_eq!(app.history.selected_commit, Some(0));
+                assert_eq!(app.history.selected, Some(Row::Working));
                 assert_eq!(app.working.selected_file, Some(0));
                 assert_eq!(app.history.files.selected_file, Some(0));
             });
@@ -3644,8 +3879,15 @@ mod tests {
         // Both a cached text diff and a cached image must stay hidden at this boundary.
         for previous in [0, 2] {
             let changes = repo.commit_changes(&commit).unwrap();
-            let stats = repo.file_stats(&changes, Some(&commit)).unwrap();
-            let content = FileContent::load(&repo, &changes[previous], Some(&commit)).unwrap();
+            let stats = repo
+                .file_stats(&changes, &Comparison::Commit(commit.clone()))
+                .unwrap();
+            let content = FileContent::load(
+                &repo,
+                &changes[previous],
+                &Comparison::Commit(commit.clone()),
+            )
+            .unwrap();
             let (handle, app) = cx.update(|cx| {
                 gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                     cx.new(|cx| {
@@ -3653,7 +3895,7 @@ mod tests {
                         app.view = View::Repositories;
                         app.repository = Some(repo.clone());
                         app.history.commits = vec![commit.clone()];
-                        app.history.selected_commit = Some(0);
+                        app.history.selected = Some(Row::Commit(0));
                         app.apply_changes(
                             Source::History,
                             PreparedChanges {
@@ -3997,7 +4239,7 @@ mod tests {
                 app.branches = branches;
                 app.history.commits = commits;
                 app.view = View::Repositories;
-                app.select_commit(0, cx);
+                app.select_row(Row::Commit(0), false, cx);
             });
             window.render_frame(cx);
         })
@@ -4103,7 +4345,7 @@ mod tests {
             window.click("back-to-files", cx);
             assert!(!app.read(cx).repository_preview);
             assert_eq!(app.read(cx).active_files().selected_file, Some(0));
-            assert_eq!(app.read(cx).history.selected_commit, Some(0));
+            assert_eq!(app.read(cx).history.selected, Some(Row::Commit(0)));
             assert!(window.try_find("tree-file-0").is_some());
             app.update(cx, |app, cx| {
                 app.view = View::History;
@@ -4120,7 +4362,7 @@ mod tests {
                 let prepared = PreparedChanges::load(
                     repo,
                     app.history.files.changes.clone(),
-                    app.current_commit(),
+                    &app.current_comparison(),
                     true,
                 )
                 .unwrap();
@@ -4172,7 +4414,7 @@ mod tests {
             app.update(cx, |app, cx| app.switch_view(View::History, cx));
             window.render_frame(cx);
             let diff = app.read(cx).history.files.diff.entity_id();
-            let selected = app.read(cx).history.selected_commit;
+            let selected = app.read(cx).history.selected;
             assert!(window.find("toggle-commit-message").checked().unwrap());
             assert!(window.try_find("commit-message").is_some());
             window.click("toggle-commit-message", cx);
@@ -4197,7 +4439,7 @@ mod tests {
             window.render_frame(cx);
             assert!(window.try_find("commit-message").is_some());
             assert_eq!(app.read(cx).history.files.diff.entity_id(), diff);
-            assert_eq!(app.read(cx).history.selected_commit, selected);
+            assert_eq!(app.read(cx).history.selected, selected);
             assert!(!app.read(cx).history.files.patch_loading);
             app.update(cx, |app, cx| app.switch_view(View::Working, cx));
             window.render_frame(cx);
@@ -4319,8 +4561,8 @@ mod tests {
                 let old_patch = app.active_files_mut().diff.read(cx).files()[0]
                     .path()
                     .clone();
-                app.select_commit(1, cx);
-                assert_eq!(app.history.selected_commit, Some(0));
+                app.select_row(Row::Commit(1), false, cx);
+                assert_eq!(app.history.selected, Some(Row::Commit(0)));
                 assert_eq!(
                     app.active_files_mut()
                         .changes
@@ -4345,7 +4587,7 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
-            assert_eq!(app.read(cx).history.selected_commit, Some(1));
+            assert_eq!(app.read(cx).history.selected, Some(Row::Commit(1)));
             assert_eq!(
                 app.read(cx).active_files().changes[0].path,
                 PathBuf::from("later.rs")
@@ -4360,7 +4602,7 @@ mod tests {
             app.update(cx, |app, cx| {
                 app.load(directory.path().join("missing-repository"), cx)
             });
-            assert_eq!(app.read(cx).history.selected_commit, Some(1));
+            assert_eq!(app.read(cx).history.selected, Some(Row::Commit(1)));
             window.render_frame(cx);
             assert!(
                 window
@@ -4373,7 +4615,7 @@ mod tests {
         cx.run_until_parked();
         cx.update(|cx| {
             assert!(app.read(cx).error.is_some());
-            assert_eq!(app.read(cx).history.selected_commit, Some(1));
+            assert_eq!(app.read(cx).history.selected, Some(Row::Commit(1)));
             assert_eq!(
                 app.read(cx).active_files().diff.read(cx).files()[0]
                     .path()
@@ -4406,7 +4648,7 @@ mod tests {
             (
                 app.working.diff.entity_id(),
                 app.history.files.diff.entity_id(),
-                app.history.selected_commit,
+                app.history.selected,
             )
         });
         for target in [
@@ -4423,7 +4665,7 @@ mod tests {
                 assert!(!app.loading);
                 assert_eq!(app.working.diff.entity_id(), working_diff);
                 assert_eq!(app.history.files.diff.entity_id(), history_diff);
-                assert_eq!(app.history.selected_commit, commit);
+                assert_eq!(app.history.selected, commit);
                 if target == View::Working {
                     assert!(window.try_find("commit-message").is_none());
                 }

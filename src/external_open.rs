@@ -1,5 +1,5 @@
 //! System application associations and file targets for the Open With menu.
-use crate::git::{Change, Commit, Repository};
+use crate::git::{Change, Comparison, Repository};
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -29,7 +29,7 @@ pub enum OpenWith {
 pub struct FileToOpen {
     pub repository: Repository,
     pub change: Change,
-    pub commit: Option<Commit>,
+    pub comparison: Comparison,
 }
 
 impl FileToOpen {
@@ -57,7 +57,7 @@ impl FileToOpen {
         }
         let bytes = self
             .repository
-            .file_versions(&self.change, self.commit.as_ref())?
+            .file_versions(&self.change, &self.comparison)?
             .original
             .context("The version before deletion is not available")?;
         let directory = tempfile::Builder::new()
@@ -125,7 +125,7 @@ mod tests {
         let historical = FileToOpen {
             change: repository.commit_changes(&commit).unwrap().remove(0),
             repository: repository.clone(),
-            commit: Some(commit),
+            comparison: Comparison::Commit(commit),
         };
         std::fs::write(&path, "INDEX\n").unwrap();
         git(directory.path(), &["add", "."]);
@@ -139,7 +139,7 @@ mod tests {
                 .find(|change| change.area == Area::Staged)
                 .unwrap(),
             repository,
-            commit: None,
+            comparison: Comparison::Working,
         };
         for target in [&historical, &staged] {
             let (opened, temporary) = target.prepare().unwrap();
@@ -180,7 +180,7 @@ mod tests {
                     .find(|change| change.area == area && change.status == 'D')
                     .unwrap(),
                 repository: repository.clone(),
-                commit: None,
+                comparison: Comparison::Working,
             };
             let (opened, temporary) = target.prepare().unwrap();
             assert_eq!(opened.file_name(), path.file_name());
@@ -194,7 +194,7 @@ mod tests {
         let target = FileToOpen {
             change: repository.commit_changes(&commit).unwrap().remove(0),
             repository,
-            commit: Some(commit),
+            comparison: Comparison::Commit(commit),
         };
         std::fs::write(&path, "RECREATED\n").unwrap();
         let (opened, _temporary) = target.prepare().unwrap();

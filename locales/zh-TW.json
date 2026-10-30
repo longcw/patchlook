@@ -104,5 +104,7 @@
   "open_file_failed": "無法打開檔案",
   "applications_failed": "無法取得應用程式列表",
   "working_branch_tooltip": "工作區分支：{branch}",
-  "viewed_branch_tooltip": "正在瀏覽：{branch}\n工作區分支：{worktree}"
+  "viewed_branch_tooltip": "正在瀏覽：{branch}\n工作區分支：{worktree}",
+  "uncommitted_changes": "未提交的變更",
+  "compare_hint": "按住 Ctrl/⌘ 點擊另一列以比較"
 }

@@ -74,7 +74,7 @@ pub struct Branch {
     pub is_head: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub id: String,
     pub short_id: String,
@@ -83,6 +83,20 @@ pub struct Commit {
     pub subject: String,
     pub body: String,
     pub parents: Vec<String>,
+}
+
+/// The two sides a file list compares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Comparison {
+    /// Index and working tree, listed by staged, unstaged and untracked area.
+    Working,
+    /// A commit against its first parent.
+    Commit(Commit),
+    /// Any base commit against a target commit, or the working tree when None.
+    Range {
+        base: String,
+        target: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -316,6 +330,46 @@ impl Repository {
         })
     }
 
+    pub fn changes(&self, comparison: &Comparison) -> Result<Vec<Change>> {
+        match comparison {
+            Comparison::Working => Ok(self.snapshot()?.changes),
+            Comparison::Commit(commit) => self.commit_changes(commit),
+            Comparison::Range { base, target } => {
+                let mut cmd = command(&self.root);
+                cmd.args(["diff", base]).args(target).args([
+                    "--name-status",
+                    "-z",
+                    "--find-renames",
+                    "--",
+                ]);
+                let mut changes = parse_names(&output(&mut cmd, false)?)?;
+                if target.is_none() {
+                    changes.extend(self.untracked()?);
+                }
+                Ok(changes)
+            }
+        }
+    }
+
+    fn untracked(&self) -> Result<Vec<Change>> {
+        let bytes = output(
+            command(&self.root).args(["ls-files", "-z", "--others", "--exclude-standard"]),
+            false,
+        )?;
+        bytes
+            .split(|b| *b == 0)
+            .filter(|r| !r.is_empty())
+            .map(|name| {
+                Ok(Change {
+                    path: path(name)?,
+                    previous_path: None,
+                    status: 'A',
+                    area: Area::Untracked,
+                })
+            })
+            .collect()
+    }
+
     pub fn commit_changes(&self, commit: &Commit) -> Result<Vec<Change>> {
         let mut cmd = self.commit_diff_command(commit);
         cmd.args(["--name-status", "-z", "--find-renames", "--"]);
@@ -350,34 +404,38 @@ impl Repository {
         cmd
     }
 
-    fn change_diff_command(&self, change: &Change, commit: Option<&Commit>) -> Command {
-        let mut cmd = if let Some(commit) = commit {
-            self.commit_diff_command(commit)
-        } else {
-            command(&self.root)
-        };
-        if commit.is_none() {
-            cmd.arg("diff");
-            match change.area {
-                Area::Staged => {
-                    cmd.arg("--cached");
+    fn change_diff_command(&self, change: &Change, comparison: &Comparison) -> Command {
+        let mut cmd = command(&self.root);
+        if change.area == Area::Untracked {
+            // Untracked files only exist when the working tree is a side.
+            cmd.args(["diff", "--no-index"]);
+            return cmd;
+        }
+        match comparison {
+            Comparison::Commit(commit) => return self.commit_diff_command(commit),
+            Comparison::Range { base, target } => {
+                cmd.args(["diff", base]).args(target);
+            }
+            Comparison::Working => {
+                cmd.arg("diff");
+                match change.area {
+                    Area::Staged => {
+                        cmd.arg("--cached");
+                    }
+                    Area::Conflict => {
+                        cmd.arg("HEAD");
+                    }
+                    Area::Unstaged | Area::Untracked => {}
                 }
-                Area::Conflict => {
-                    cmd.arg("HEAD");
-                }
-                Area::Untracked => {
-                    cmd.arg("--no-index");
-                }
-                Area::Unstaged => {}
             }
         }
         cmd
     }
 
     /// Sum the same staged/working/untracked entries that the file list exposes.
-    pub fn change_stats(&self, changes: &[Change], commit: Option<&Commit>) -> Result<DiffStats> {
+    pub fn change_stats(&self, changes: &[Change], comparison: &Comparison) -> Result<DiffStats> {
         Ok(self
-            .file_stats(changes, commit)?
+            .file_stats(changes, comparison)?
             .into_iter()
             .flatten()
             .sum())
@@ -388,9 +446,9 @@ impl Repository {
     pub fn file_stats(
         &self,
         changes: &[Change],
-        commit: Option<&Commit>,
+        comparison: &Comparison,
     ) -> Result<Vec<Option<DiffStats>>> {
-        if let Some(commit) = commit {
+        if let Comparison::Commit(commit) = comparison {
             let stats = self.commit_file_stats(commit)?;
             return changes
                 .iter()
@@ -404,7 +462,13 @@ impl Repository {
         }
         // Git omits entries with no textual diff (for example an empty untracked file).
         let mut stats = vec![Some(DiffStats::default()); changes.len()];
-        for area in [Area::Staged, Area::Unstaged, Area::Conflict] {
+        let areas: &[Area] = if *comparison == Comparison::Working {
+            &[Area::Staged, Area::Unstaged, Area::Conflict]
+        } else {
+            // parse_names files every tracked change of a range under one area.
+            &[Area::Staged]
+        };
+        for &area in areas {
             let entries: Vec<_> = changes
                 .iter()
                 .enumerate()
@@ -413,7 +477,7 @@ impl Repository {
             let Some((_, first)) = entries.first() else {
                 continue;
             };
-            let mut cmd = self.change_diff_command(first, None);
+            let mut cmd = self.change_diff_command(first, comparison);
             cmd.args([
                 "--numstat",
                 "-z",
@@ -440,7 +504,7 @@ impl Repository {
             .enumerate()
             .filter(|(_, change)| change.area == Area::Untracked)
         {
-            let mut cmd = self.change_diff_command(change, None);
+            let mut cmd = self.change_diff_command(change, comparison);
             cmd.args(["--numstat", "-z", "--no-ext-diff", "--no-textconv", "--"])
                 .arg(null_device())
                 .arg(&change.path);
@@ -454,9 +518,9 @@ impl Repository {
         Ok(stats)
     }
 
-    pub fn patch(&self, change: &Change, commit: Option<&Commit>) -> Result<String> {
-        let mut cmd = self.change_diff_command(change, commit);
-        let untracked = commit.is_none() && change.area == Area::Untracked;
+    pub fn patch(&self, change: &Change, comparison: &Comparison) -> Result<String> {
+        let mut cmd = self.change_diff_command(change, comparison);
+        let untracked = change.area == Area::Untracked;
         cmd.args([
             "-p",
             "--no-ext-diff",
@@ -485,36 +549,45 @@ impl Repository {
         text(output(&mut cmd, untracked)?)
     }
 
-    pub fn file_versions(&self, change: &Change, commit: Option<&Commit>) -> Result<FileVersions> {
+    pub fn file_versions(&self, change: &Change, comparison: &Comparison) -> Result<FileVersions> {
         let old_path = change.previous_path.as_deref().unwrap_or(&change.path);
         let original = if change.status == 'A' || change.area == Area::Untracked {
             None
-        } else if let Some(commit) = commit {
-            match commit.parents.first() {
-                Some(parent) => self.tree_file(parent, old_path)?,
-                None => None,
-            }
-        } else if change.area == Area::Unstaged {
-            Some(self.index_file(old_path)?)
         } else {
-            self.tree_file("HEAD", old_path)?
+            match comparison {
+                Comparison::Commit(commit) => match commit.parents.first() {
+                    Some(parent) => self.tree_file(parent, old_path)?,
+                    None => None,
+                },
+                Comparison::Range { base, .. } => self.tree_file(base, old_path)?,
+                Comparison::Working if change.area == Area::Unstaged => {
+                    Some(self.index_file(old_path)?)
+                }
+                Comparison::Working => self.tree_file("HEAD", old_path)?,
+            }
         };
         let modified = if change.status == 'D' {
             None
-        } else if let Some(commit) = commit {
-            self.tree_file(&commit.id, &change.path)?
-        } else if change.area == Area::Staged {
-            Some(self.index_file(&change.path)?)
         } else {
-            match std::fs::read(self.root.join(&change.path)) {
-                Ok(bytes) => Some(bytes),
-                Err(error)
-                    if change.area == Area::Conflict
-                        && error.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    None
+            match comparison {
+                Comparison::Commit(commit) => self.tree_file(&commit.id, &change.path)?,
+                Comparison::Range {
+                    target: Some(target),
+                    ..
+                } => self.tree_file(target, &change.path)?,
+                Comparison::Working if change.area == Area::Staged => {
+                    Some(self.index_file(&change.path)?)
                 }
-                Err(error) => return Err(error).context("Cannot read working-tree image"),
+                _ => match std::fs::read(self.root.join(&change.path)) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error)
+                        if change.area == Area::Conflict
+                            && error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        None
+                    }
+                    Err(error) => return Err(error).context("Cannot read working-tree image"),
+                },
             }
         };
         Ok(FileVersions { original, modified })
@@ -753,7 +826,8 @@ mod tests {
             })
         );
         assert_eq!(
-            repo.change_stats(&changes, Some(&initial)).unwrap(),
+            repo.change_stats(&changes, &Comparison::Commit(initial.clone()))
+                .unwrap(),
             DiffStats {
                 additions: 22,
                 deletions: 0
@@ -777,7 +851,7 @@ mod tests {
         fs::write(repo.root.join("new.rs"), "a\nb").unwrap();
         fs::write(repo.root.join("binary.bin"), [0, 1, 2]).unwrap();
         let changes = repo.snapshot().unwrap().changes;
-        let stats = repo.file_stats(&changes, None).unwrap();
+        let stats = repo.file_stats(&changes, &Comparison::Working).unwrap();
         for (change, stats) in changes.iter().zip(stats) {
             let expected = if change.path == Path::new("binary.bin") {
                 None
@@ -800,7 +874,7 @@ mod tests {
             assert_eq!(stats, expected, "{change:?}");
         }
         assert_eq!(
-            repo.change_stats(&changes, None).unwrap(),
+            repo.change_stats(&changes, &Comparison::Working).unwrap(),
             DiffStats {
                 additions: 6,
                 deletions: 2
@@ -835,14 +909,15 @@ mod tests {
         );
         assert_eq!(stats[Path::new("binary.bin")], None);
         assert_eq!(
-            repo.change_stats(&changes, Some(&selected)).unwrap(),
+            repo.change_stats(&changes, &Comparison::Commit(selected.clone()))
+                .unwrap(),
             DiffStats {
                 additions: 5,
                 deletions: 1
             }
         );
         assert_eq!(
-            repo.change_stats(&repo.snapshot().unwrap().changes, None)
+            repo.change_stats(&repo.snapshot().unwrap().changes, &Comparison::Working)
                 .unwrap(),
             DiffStats::default()
         );
@@ -887,7 +962,9 @@ mod tests {
         let snapshot = repo.snapshot().unwrap();
         assert_eq!(snapshot.branch, "main");
         assert_eq!(snapshot.changes.len(), 3);
-        let stats = repo.file_stats(&snapshot.changes, None).unwrap();
+        let stats = repo
+            .file_stats(&snapshot.changes, &Comparison::Working)
+            .unwrap();
         for (change, stats) in snapshot.changes.iter().zip(stats) {
             assert_eq!(
                 stats,
@@ -904,7 +981,7 @@ mod tests {
         for change in snapshot.changes {
             assert_eq!(change.area, Area::Untracked);
             assert_eq!(change.status, 'A');
-            let patch = repo.patch(&change, None).unwrap();
+            let patch = repo.patch(&change, &Comparison::Working).unwrap();
             assert!(patch.contains("new file mode"));
             if change.path.ends_with("image.bin") {
                 assert!(patch.contains("Binary files"));
@@ -927,9 +1004,13 @@ mod tests {
         assert_eq!(changes.len(), 2);
         let staged = changes.iter().find(|c| c.area == Area::Staged).unwrap();
         let unstaged = changes.iter().find(|c| c.area == Area::Unstaged).unwrap();
-        assert!(repo.patch(staged, None).unwrap().contains("-base\n+staged"));
         assert!(
-            repo.patch(unstaged, None)
+            repo.patch(staged, &Comparison::Working)
+                .unwrap()
+                .contains("-base\n+staged")
+        );
+        assert!(
+            repo.patch(unstaged, &Comparison::Working)
                 .unwrap()
                 .contains("-staged\n+working")
         );
@@ -944,7 +1025,9 @@ mod tests {
         let working = b"working\0image";
         fs::write(repo.root.join(name), base).unwrap();
         let untracked = repo.snapshot().unwrap().changes.remove(0);
-        let versions = repo.file_versions(&untracked, None).unwrap();
+        let versions = repo
+            .file_versions(&untracked, &Comparison::Working)
+            .unwrap();
         assert_eq!(versions.original, None);
         assert_eq!(versions.modified.as_deref(), Some(base.as_slice()));
         commit(&repo, "Initial image");
@@ -954,7 +1037,7 @@ mod tests {
         fs::write(repo.root.join(name), working).unwrap();
         let changes = repo.snapshot().unwrap().changes;
         for change in &changes {
-            let versions = repo.file_versions(change, None).unwrap();
+            let versions = repo.file_versions(change, &Comparison::Working).unwrap();
             let (old, new) = if change.area == Area::Staged {
                 (base.as_slice(), staged.as_slice())
             } else {
@@ -967,19 +1050,24 @@ mod tests {
         let modified = repo.history(0, None).unwrap().commits.remove(0);
         run(&repo.root, &["mv", name, "renamed.png"]);
         let rename = repo.snapshot().unwrap().changes.remove(0);
-        let versions = repo.file_versions(&rename, None).unwrap();
+        let versions = repo.file_versions(&rename, &Comparison::Working).unwrap();
         assert_eq!(versions.original.as_deref(), Some(working.as_slice()));
         assert_eq!(versions.modified.as_deref(), Some(working.as_slice()));
         commit(&repo, "Rename image");
         let renamed = repo.history(0, None).unwrap().commits.remove(0);
         fs::remove_file(repo.root.join("renamed.png")).unwrap();
         let deleted = repo.snapshot().unwrap().changes.remove(0);
-        let versions = repo.file_versions(&deleted, None).unwrap();
+        let versions = repo.file_versions(&deleted, &Comparison::Working).unwrap();
         assert_eq!(versions.original.as_deref(), Some(working.as_slice()));
         assert_eq!(versions.modified, None);
         run(&repo.root, &["add", "--all"]);
         let deleted = repo.snapshot().unwrap().changes.remove(0);
-        assert_eq!(repo.file_versions(&deleted, None).unwrap().modified, None);
+        assert_eq!(
+            repo.file_versions(&deleted, &Comparison::Working)
+                .unwrap()
+                .modified,
+            None
+        );
         commit(&repo, "Delete image");
         let removed = repo.history(0, None).unwrap().commits.remove(0);
         // No image remains on disk; every historical version must still load.
@@ -990,7 +1078,9 @@ mod tests {
             (removed, Some(working.as_slice()), None),
         ] {
             let change = repo.commit_changes(&commit).unwrap().remove(0);
-            let versions = repo.file_versions(&change, Some(&commit)).unwrap();
+            let versions = repo
+                .file_versions(&change, &Comparison::Commit(commit.clone()))
+                .unwrap();
             assert_eq!(versions.original.as_deref(), old);
             assert_eq!(versions.modified.as_deref(), new);
         }
@@ -1006,7 +1096,7 @@ mod tests {
         assert_eq!(change.status, 'R');
         assert_eq!(change.previous_path, Some(PathBuf::from("old name.rs")));
         assert!(
-            repo.patch(&change, None)
+            repo.patch(&change, &Comparison::Working)
                 .unwrap()
                 .contains("rename to 新 name.rs")
         );
@@ -1020,7 +1110,7 @@ mod tests {
         assert!(initial.parents.is_empty());
         let added = repo.commit_changes(initial).unwrap().remove(0);
         assert!(
-            repo.patch(&added, Some(initial))
+            repo.patch(&added, &Comparison::Commit(initial.clone()))
                 .unwrap()
                 .contains("+let value = 1;")
         );
@@ -1041,9 +1131,68 @@ mod tests {
             .iter()
             .find(|c| c.path == Path::new("[file].rs"))
             .unwrap();
-        let patch = repo.patch(target, None).unwrap();
+        let patch = repo.patch(target, &Comparison::Working).unwrap();
         assert!(patch.contains("+[file].rs"));
         assert!(!patch.contains("+f.rs"));
+    }
+
+    #[test]
+    fn ranges_compare_any_commit_with_a_later_commit_or_the_working_tree() {
+        let (_temp, repo) = fixture();
+        fs::write(repo.root.join("file.txt"), "one\n").unwrap();
+        commit(&repo, "One");
+        fs::write(repo.root.join("file.txt"), "two\n").unwrap();
+        commit(&repo, "Two");
+        fs::write(repo.root.join("file.txt"), "three\n").unwrap();
+        commit(&repo, "Three");
+        fs::write(repo.root.join("file.txt"), "working\n").unwrap();
+        fs::write(repo.root.join("new.txt"), "new\n").unwrap();
+        let commits = repo.history(0, None).unwrap().commits;
+
+        let skipped = Comparison::Range {
+            base: commits[2].id.clone(),
+            target: Some(commits[0].id.clone()),
+        };
+        let changes = repo.changes(&skipped).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(
+            repo.patch(&changes[0], &skipped)
+                .unwrap()
+                .contains("-one\n+three")
+        );
+        let versions = repo.file_versions(&changes[0], &skipped).unwrap();
+        assert_eq!(versions.original.as_deref(), Some(b"one\n".as_slice()));
+        assert_eq!(versions.modified.as_deref(), Some(b"three\n".as_slice()));
+
+        let working = Comparison::Range {
+            base: commits[1].id.clone(),
+            target: None,
+        };
+        let changes = repo.changes(&working).unwrap();
+        let paths: Vec<_> = changes
+            .iter()
+            .map(|change| (change.path.clone(), change.area))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("file.txt".into(), Area::Staged),
+                ("new.txt".into(), Area::Untracked)
+            ]
+        );
+        assert!(
+            repo.patch(&changes[0], &working)
+                .unwrap()
+                .contains("-two\n+working")
+        );
+        assert!(repo.patch(&changes[1], &working).unwrap().contains("+new"));
+        assert_eq!(
+            repo.change_stats(&changes, &working).unwrap(),
+            DiffStats {
+                additions: 2,
+                deletions: 1
+            }
+        );
     }
 
     #[test]
@@ -1073,7 +1222,7 @@ mod tests {
         );
         assert_eq!(changes[0].path, PathBuf::from("feature.rs"));
         assert!(
-            repo.patch(&changes[0], Some(&merged))
+            repo.patch(&changes[0], &Comparison::Commit(merged.clone()))
                 .unwrap()
                 .contains("+feature")
         );
@@ -1092,7 +1241,7 @@ mod tests {
         }
         fs::write(repo.root.join("binary.bin"), [0, 1, 2]).unwrap();
         for change in repo.snapshot().unwrap().changes {
-            let patch = repo.patch(&change, None).unwrap();
+            let patch = repo.patch(&change, &Comparison::Working).unwrap();
             let files = DiffFile::parse(&patch).unwrap();
             assert_eq!(files.len(), 1, "{patch}");
             assert_eq!(files[0].path().as_ref(), change.path.to_str().unwrap());
@@ -1122,8 +1271,8 @@ mod tests {
                 .replace(&format!("line_100{eol}"), &format!("changed_100{eol}"));
             fs::write(repo.root.join("context.rs"), after).unwrap();
 
-            let verify = |change: &Change, commit: Option<&Commit>| {
-                let patch = repo.patch(change, commit).unwrap();
+            let verify = |change: &Change, comparison: &Comparison| {
+                let patch = repo.patch(change, comparison).unwrap();
                 let files = DiffFile::parse(&patch).unwrap();
                 assert_eq!(files.len(), 1);
                 assert_eq!(files[0].additions(), 2);
@@ -1139,17 +1288,17 @@ mod tests {
             };
             let unstaged = repo.snapshot().unwrap().changes.remove(0);
             assert_eq!(unstaged.area, Area::Unstaged);
-            verify(&unstaged, None);
+            verify(&unstaged, &Comparison::Working);
 
             run(&repo.root, &["add", "--all"]);
             let staged = repo.snapshot().unwrap().changes.remove(0);
             assert_eq!(staged.area, Area::Staged);
-            verify(&staged, None);
+            verify(&staged, &Comparison::Working);
 
             commit(&repo, "Two separated changes");
             let selected = repo.history(0, None).unwrap().commits.remove(0);
             let historical = repo.commit_changes(&selected).unwrap().remove(0);
-            verify(&historical, Some(&selected));
+            verify(&historical, &Comparison::Commit(selected.clone()));
         }
     }
 
@@ -1331,7 +1480,7 @@ mod tests {
             assert_eq!(history.commits[0].body, "Full message\n\nSecond paragraph");
             let changes = repo.commit_changes(&history.commits[0]).unwrap();
             assert!(
-                repo.patch(&changes[0], Some(&history.commits[0]))
+                repo.patch(&changes[0], &Comparison::Commit(history.commits[0].clone()))
                     .unwrap()
                     .contains("+feature")
             );
@@ -1371,7 +1520,7 @@ mod tests {
         let conflict = repo.snapshot().unwrap().changes.remove(0);
         assert_eq!(conflict.area, Area::Conflict);
         assert!(
-            repo.patch(&conflict, None)
+            repo.patch(&conflict, &Comparison::Working)
                 .unwrap()
                 .contains("+<<<<<<< HEAD")
         );

@@ -104,5 +104,7 @@
   "open_file_failed": "Unable to open file",
   "applications_failed": "Unable to list applications",
   "working_branch_tooltip": "Working-tree branch: {branch}",
-  "viewed_branch_tooltip": "Browsing branch: {branch}\nWorking-tree branch: {worktree}"
+  "viewed_branch_tooltip": "Browsing branch: {branch}\nWorking-tree branch: {worktree}",
+  "uncommitted_changes": "Uncommitted changes",
+  "compare_hint": "Ctrl/⌘-click another row to compare"
 }
