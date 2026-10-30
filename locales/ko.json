@@ -125,5 +125,8 @@
   "finding_pull_request": "{commit}의 풀 리퀘스트를 찾는 중…",
   "finding_commit": "GitHub에서 {commit} 확인 중…",
   "opening_in_zed": "Zed에서 여는 중…",
-  "cancel": "취소"
+  "cancel": "취소",
+  "opened_pull_request": "풀 리퀘스트 #{number}을(를) 열었습니다",
+  "opened_on_github": "GitHub에서 열었습니다",
+  "opened_in_zed": "Zed에서 열었습니다"
 }

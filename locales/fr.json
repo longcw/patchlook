@@ -125,5 +125,8 @@
   "finding_pull_request": "Recherche de la pull request de {commit}…",
   "finding_commit": "Vérification de {commit} sur GitHub…",
   "opening_in_zed": "Ouverture dans Zed…",
-  "cancel": "Annuler"
+  "cancel": "Annuler",
+  "opened_pull_request": "Pull request #{number} ouverte",
+  "opened_on_github": "Ouvert sur GitHub",
+  "opened_in_zed": "Ouvert dans Zed"
 }

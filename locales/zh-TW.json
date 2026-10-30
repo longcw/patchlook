@@ -125,5 +125,8 @@
   "finding_pull_request": "正在尋找 {commit} 的提取請求…",
   "finding_commit": "正在 GitHub 上查找 {commit}…",
   "opening_in_zed": "正在 Zed 中開啟…",
-  "cancel": "取消"
+  "cancel": "取消",
+  "opened_pull_request": "已開啟提取請求 #{number}",
+  "opened_on_github": "已在 GitHub 上開啟",
+  "opened_in_zed": "已在 Zed 中開啟"
 }

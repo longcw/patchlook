@@ -125,5 +125,8 @@
   "finding_pull_request": "{commit} のプルリクエストを検索中…",
   "finding_commit": "GitHub で {commit} を確認中…",
   "opening_in_zed": "Zed で開いています…",
-  "cancel": "キャンセル"
+  "cancel": "キャンセル",
+  "opened_pull_request": "プルリクエスト #{number} を開きました",
+  "opened_on_github": "GitHub で開きました",
+  "opened_in_zed": "Zed で開きました"
 }

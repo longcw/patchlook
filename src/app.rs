@@ -45,6 +45,7 @@ use std::{
 
 const FILE_SELECTION_DELAY: Duration = Duration::from_millis(120);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
+const LINK_RESULT_DURATION: Duration = Duration::from_secs(2);
 const HISTORY_SEARCH_THRESHOLD: usize = 20;
 const MAX_GRAPH_LANES: usize = 10;
 /// The viewed-branch choice for the checked-out branch; no choice means all branches.
@@ -335,8 +336,8 @@ pub struct Patchlook {
     /// The diff line under the pointer, which the diff's context menu acts on.
     hovered_line: Option<DiffLinePosition>,
     github_remotes: Vec<github::GitHubRepo>,
-    /// A running network lookup and what it is doing; dropping it cancels the lookup.
-    link_task: Option<(String, Task<()>)>,
+    /// A network lookup's progress or result, shown in a floating card.
+    link_status: Option<LinkStatus>,
     view: View,
     history: HistoryState,
     repository_preview: bool,
@@ -423,7 +424,7 @@ impl Patchlook {
             branch_tab: BranchTab::Branches,
             hovered_line: None,
             github_remotes: Vec::new(),
-            link_task: None,
+            link_status: None,
             view,
             repository_preview: false,
 
@@ -1069,7 +1070,7 @@ impl Patchlook {
     }
 
     /// Runs a link lookup off the main thread, showing `status` until it opens
-    /// the page it finds; a newer lookup or Cancel replaces it.
+    /// the page it finds and briefly what it opened; a newer lookup or Cancel replaces it.
     fn open_link(
         &mut self,
         status: String,
@@ -1083,16 +1084,35 @@ impl Patchlook {
         let task = cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { job(repo) }).await;
             let _ = this.update(cx, |this, cx| {
-                this.link_task = None;
+                this.link_status = None;
                 match result {
-                    Ok(Some(url)) => cx.open_url(&url),
-                    Ok(None) => {}
+                    Ok(url) => {
+                        if let Some(url) = &url {
+                            cx.open_url(url);
+                        }
+                        let hide = cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(LINK_RESULT_DURATION).await;
+                            let _ = this.update(cx, |this, cx| {
+                                this.link_status = None;
+                                cx.notify();
+                            });
+                        });
+                        this.link_status = Some(LinkStatus {
+                            text: opened_message(url.as_deref()),
+                            running: false,
+                            _task: hide,
+                        });
+                    }
                     Err(error) => this.error = Some(format!("{error:#}")),
                 }
                 cx.notify();
             });
         });
-        self.link_task = Some((status, task));
+        self.link_status = Some(LinkStatus {
+            text: status,
+            running: true,
+            _task: task,
+        });
         cx.notify();
     }
 
@@ -1281,6 +1301,14 @@ impl BranchTab {
             Self::Worktrees => "search_worktrees",
         }
     }
+}
+
+struct LinkStatus {
+    text: String,
+    running: bool,
+    /// The lookup while running, then the timer that hides its result;
+    /// dropping it cancels either.
+    _task: Task<()>,
 }
 
 /// A row of the worktree list.
@@ -1536,6 +1564,17 @@ fn commit_menu(
                 this.select_row(row, true, cx)
             }))),
     )
+}
+
+/// What a finished link lookup opened, from the page it found or Zed when none.
+fn opened_message(url: Option<&str>) -> String {
+    let Some(url) = url else {
+        return tr("opened_in_zed").to_owned();
+    };
+    match url.split_once("/pull/") {
+        Some((_, number)) => tr("opened_pull_request").replace("{number}", number),
+        None => tr("opened_on_github").to_owned(),
+    }
 }
 
 /// The revision a viewed-branch choice shows.
@@ -3376,6 +3415,13 @@ impl Patchlook {
                 ),
             )
             .id(("history-row", index))
+            // A right-click opens the menu, which takes the mouse-up, so the row's
+            // button must never treat it as a press that would then stay drawn.
+            .capture_any_mouse_down(|event, window, _| {
+                if event.button == MouseButton::Right {
+                    window.prevent_default();
+                }
+            })
             .context_menu({
                 let app = cx.entity().downgrade();
                 move |menu, window, cx| commit_menu(app.clone(), row, menu, window, cx)
@@ -3743,6 +3789,7 @@ impl Render for Patchlook {
                 .into_any_element()
         };
         v_flex()
+            .relative()
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().background)
@@ -3755,40 +3802,6 @@ impl Render for Patchlook {
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::show_about))
             .child(self.toolbar(cx))
-            .when_some(self.link_task.as_ref(), |view, (status, _)| {
-                view.child(
-                    h_flex()
-                        .id("link-status")
-                        .flex_none()
-                        .gap_3()
-                        .px_4()
-                        .py_1()
-                        .bg(cx.theme().secondary)
-                        .child(
-                            Icon::new(IconName::LoaderCircle)
-                                .xsmall()
-                                .text_color(cx.theme().muted_foreground)
-                                .with_animation(
-                                    "link-status-spinner",
-                                    Animation::new(Duration::from_secs(1)).repeat(),
-                                    |icon, delta| {
-                                        icon.transform(Transformation::rotate(percentage(delta)))
-                                    },
-                                ),
-                        )
-                        .child(div().flex_1().text_sm().child(status.clone()))
-                        .child(
-                            Button::new("cancel-link")
-                                .label(tr("cancel"))
-                                .xsmall()
-                                .ghost()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.link_task = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-            })
             .when_some(self.visible_error().cloned(), |view, error| {
                 view.child(
                     h_flex()
@@ -3821,6 +3834,58 @@ impl Render for Patchlook {
                     .overflow_hidden()
                     .child(body),
             )
+            .when_some(self.link_status.as_ref(), |view, status| {
+                // Floats over the content so showing it never shifts the layout.
+                view.child(
+                    div().absolute().right_4().bottom_4().child(
+                        h_flex()
+                            .id("link-status")
+                            .test_support()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().popover)
+                            .shadow_md()
+                            .text_sm()
+                            .child(if status.running {
+                                Icon::new(IconName::LoaderCircle)
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .with_animation(
+                                        "link-status-spinner",
+                                        Animation::new(Duration::from_secs(1)).repeat(),
+                                        |icon, delta| {
+                                            icon.transform(Transformation::rotate(percentage(
+                                                delta,
+                                            )))
+                                        },
+                                    )
+                                    .into_any_element()
+                            } else {
+                                Icon::new(IconName::Check)
+                                    .xsmall()
+                                    .text_color(cx.theme().success)
+                                    .into_any_element()
+                            })
+                            .child(status.text.clone())
+                            .when(status.running, |card| {
+                                card.child(
+                                    Button::new("cancel-link")
+                                        .label(tr("cancel"))
+                                        .xsmall()
+                                        .ghost()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.link_status = None;
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
+                    ),
+                )
+            })
             .child(self.about.clone())
     }
 }
@@ -3919,7 +3984,7 @@ mod tests {
             branch_tab: BranchTab::Branches,
             hovered_line: None,
             github_remotes: Vec::new(),
-            link_task: None,
+            link_status: None,
             view: View::History,
             repository_preview: false,
 
@@ -4790,25 +4855,37 @@ mod tests {
             })
             .unwrap()
         });
+        let status = |cx: &mut TestAppContext| {
+            app.read_with(cx, |app, _| {
+                let status = app.link_status.as_ref();
+                status.map(|status| (status.text.clone(), status.running))
+            })
+        };
         for cancel in [false, true] {
             app.update(cx, |app, cx| {
                 app.open_link("Looking".into(), |_| anyhow::bail!("not found"), cx);
-                assert_eq!(
-                    app.link_task.as_ref().map(|(s, _)| s.as_str()),
-                    Some("Looking")
-                );
                 if cancel {
-                    app.link_task = None;
+                    app.link_status = None;
                 }
             });
+            if !cancel {
+                assert_eq!(status(cx), Some(("Looking".into(), true)));
+            }
             cx.run_until_parked();
-            app.read_with(cx, |app, _| {
-                assert!(app.link_task.is_none());
-                // A cancelled lookup's result never arrives.
-                assert_eq!(app.error.is_some(), !cancel);
-            });
+            assert_eq!(status(cx), None);
+            // A cancelled lookup's result never arrives.
+            app.read_with(cx, |app, _| assert_eq!(app.error.is_some(), !cancel));
             app.update(cx, |app, _| app.error = None);
         }
+        // A finished lookup says what it opened, then hides.
+        app.update(cx, |app, cx| {
+            app.open_link("Opening".into(), |_| Ok(None), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(status(cx), Some((tr("opened_in_zed").to_owned(), false)));
+        cx.executor().advance_clock(LINK_RESULT_DURATION);
+        cx.run_until_parked();
+        assert_eq!(status(cx), None);
     }
 
     #[gpui_kit::test]
