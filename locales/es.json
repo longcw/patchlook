@@ -102,5 +102,8 @@
   "applications_failed": "No se pudieron listar las aplicaciones",
   "viewed_branch_tooltip": "Rama consultada: {branch}\nRama de trabajo: {worktree}",
   "uncommitted_changes": "Cambios sin confirmar",
-  "compare_hint": "Ctrl/⌘-clic en otra fila para comparar"
+  "compare_hint": "Ctrl/⌘-clic en otra fila para comparar",
+  "open_remote": "Abrir repositorio por SSH",
+  "remote_placeholder": "host:/ruta/al/repo",
+  "remote_invalid": "Introduce un remoto como host:/ruta o host:~/ruta"
 }

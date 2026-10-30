@@ -102,5 +102,8 @@
   "applications_failed": "無法取得應用程式列表",
   "viewed_branch_tooltip": "正在瀏覽：{branch}\n工作區分支：{worktree}",
   "uncommitted_changes": "未提交的變更",
-  "compare_hint": "按住 Ctrl/⌘ 點擊另一列以比較"
+  "compare_hint": "按住 Ctrl/⌘ 點擊另一列以比較",
+  "open_remote": "透過 SSH 開啟儲存庫",
+  "remote_placeholder": "host:/儲存庫/路徑",
+  "remote_invalid": "請輸入 host:/路徑 或 host:~/路徑 格式的遠端位址"
 }

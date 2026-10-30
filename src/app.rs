@@ -24,7 +24,7 @@ use gpui_kit::{
 };
 use patchlook::{
     external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
-    git::{Branch, Change, Commit, Comparison, DiffStats, HistoryPage, Repository},
+    git::{Branch, Change, Commit, Comparison, DiffStats, HistoryPage, Repository, parse_remote},
     preferences::{Appearance, Language, Layout, Preferences},
 };
 use std::{
@@ -252,6 +252,8 @@ pub struct Patchlook {
     history: HistoryState,
     repository_preview: bool,
     history_search: Entity<InputState>,
+    /// `host:/path` entry for opening a repository over SSH; shown on demand.
+    remote_input: Option<(Entity<InputState>, Subscription)>,
     commit_copied: bool,
     copy_feedback_task: Option<Task<()>>,
     loading: bool,
@@ -312,6 +314,7 @@ impl Patchlook {
             repository_preview: false,
 
             history_search,
+            remote_input: None,
 
             commit_copied: false,
             copy_feedback_task: None,
@@ -367,6 +370,32 @@ impl Patchlook {
             _ => {}
         })
         .detach();
+    }
+
+    fn toggle_remote_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_input.take().is_some() {
+            window.focus(&self.focus, cx);
+            cx.notify();
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr("remote_placeholder")));
+        let subscription = cx.subscribe(&input, |this, input, event, cx| {
+            if matches!(event, TextInputEvent::PressEnter { .. }) {
+                let value = input.read(cx).value().to_string();
+                match parse_remote(&value) {
+                    Some(path) => {
+                        this.remote_input = None;
+                        this.error = None;
+                        this.load(path, cx);
+                    }
+                    None => this.error = Some(tr("remote_invalid").to_owned()),
+                }
+                cx.notify();
+            }
+        });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.remote_input = Some((input, subscription));
+        cx.notify();
     }
 
     fn active_files(&self) -> &ChangeState {
@@ -1433,6 +1462,15 @@ impl Patchlook {
                     .child(self.preferences.recent_repositories.len().to_string())
                     .child(div().flex_1())
                     .child(
+                        icon_button("add-remote-repository", IconName::Globe, "open_remote")
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground)
+                            .selected(self.remote_input.is_some())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_remote_input(window, cx)
+                            })),
+                    )
+                    .child(
                         icon_button("add-repository", IconName::Plus, "open_repository")
                             .xsmall()
                             .text_color(cx.theme().muted_foreground)
@@ -1452,6 +1490,25 @@ impl Patchlook {
                             })),
                     ),
             )
+            .when_some(self.remote_input.as_ref(), |view, (input, _)| {
+                view.child(
+                    div()
+                        .flex_none()
+                        .px_2()
+                        .pb_2()
+                        .on_action(
+                            cx.listener(|this, _: &component::input::Escape, window, cx| {
+                                this.toggle_remote_input(window, cx)
+                            }),
+                        )
+                        .child(
+                            Input::new(input)
+                                .id("remote-repository-input")
+                                .aria_label(tr("open_remote"))
+                                .small(),
+                        ),
+                )
+            })
             .child(
                 div()
                     .relative()
@@ -2784,6 +2841,7 @@ mod tests {
             repository_preview: false,
 
             history_search: cx.new(|cx| InputState::new(window, cx)),
+            remote_input: None,
 
             commit_copied: false,
             copy_feedback_task: None,

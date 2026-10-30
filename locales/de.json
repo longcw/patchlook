@@ -102,5 +102,8 @@
   "applications_failed": "Anwendungen können nicht aufgelistet werden",
   "viewed_branch_tooltip": "Angezeigter Branch: {branch}\nArbeitsverzeichnis-Branch: {worktree}",
   "uncommitted_changes": "Nicht committete Änderungen",
-  "compare_hint": "Mit Strg/⌘-Klick auf eine andere Zeile vergleichen"
+  "compare_hint": "Mit Strg/⌘-Klick auf eine andere Zeile vergleichen",
+  "open_remote": "Repository über SSH öffnen",
+  "remote_placeholder": "host:/pfad/zum/repo",
+  "remote_invalid": "Remote als host:/pfad oder host:~/pfad eingeben"
 }

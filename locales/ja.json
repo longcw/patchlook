@@ -102,5 +102,8 @@
   "applications_failed": "アプリケーション一覧を取得できません",
   "viewed_branch_tooltip": "閲覧中のブランチ: {branch}\n作業ツリーのブランチ: {worktree}",
   "uncommitted_changes": "未コミットの変更",
-  "compare_hint": "Ctrl/⌘ を押しながら別の行をクリックして比較"
+  "compare_hint": "Ctrl/⌘ を押しながら別の行をクリックして比較",
+  "open_remote": "SSH でリポジトリを開く",
+  "remote_placeholder": "host:/path/to/repo",
+  "remote_invalid": "リモートは host:/パス または host:~/パス の形式で入力してください"
 }

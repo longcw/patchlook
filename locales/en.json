@@ -102,5 +102,8 @@
   "applications_failed": "Unable to list applications",
   "viewed_branch_tooltip": "Browsing branch: {branch}\nWorking-tree branch: {worktree}",
   "uncommitted_changes": "Uncommitted changes",
-  "compare_hint": "Ctrl/⌘-click another row to compare"
+  "compare_hint": "Ctrl/⌘-click another row to compare",
+  "open_remote": "Open repository over SSH",
+  "remote_placeholder": "host:/path/to/repo",
+  "remote_invalid": "Enter a remote as host:/path or host:~/path"
 }

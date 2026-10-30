@@ -102,5 +102,8 @@
   "applications_failed": "Impossible de lister les applications",
   "viewed_branch_tooltip": "Branche consultée : {branch}\nBranche de travail : {worktree}",
   "uncommitted_changes": "Modifications non validées",
-  "compare_hint": "Ctrl/⌘-clic sur une autre ligne pour comparer"
+  "compare_hint": "Ctrl/⌘-clic sur une autre ligne pour comparer",
+  "open_remote": "Ouvrir un dépôt via SSH",
+  "remote_placeholder": "hôte:/chemin/du/dépôt",
+  "remote_invalid": "Saisissez un distant sous la forme hôte:/chemin ou hôte:~/chemin"
 }

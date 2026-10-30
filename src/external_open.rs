@@ -47,7 +47,8 @@ impl FileToOpen {
 
     fn prepare(&self) -> Result<(PathBuf, Option<TempDir>)> {
         let path = self.path();
-        if self.change.status != 'D' {
+        let remote = self.repository.is_remote();
+        if self.change.status != 'D' && !remote {
             ensure!(
                 path.is_file(),
                 "File is not present in the working tree: {}",
@@ -55,11 +56,15 @@ impl FileToOpen {
             );
             return Ok((path, None));
         }
-        let bytes = self
-            .repository
-            .file_versions(&self.change, &self.comparison)?
-            .original
-            .context("The version before deletion is not available")?;
+        // Remote files and deleted files open as a local copy of the newest version.
+        let bytes = if self.change.status == 'D' {
+            self.repository
+                .file_versions(&self.change, &self.comparison)?
+                .original
+                .context("The version before deletion is not available")?
+        } else {
+            self.repository.worktree_file(&self.change.path)?
+        };
         let directory = tempfile::Builder::new()
             .prefix("patchlook-open-")
             .tempdir()?;

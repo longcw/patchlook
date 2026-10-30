@@ -1,8 +1,11 @@
-//! Read-only Git access. Arguments are passed directly to Git, never to a shell.
+//! Read-only Git access. Local arguments are passed directly to Git, never to a shell;
+//! repositories at `ssh://host/path` run Git on that host with every argument quoted.
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     collections::HashMap,
+    ffi::{OsStr, OsString},
     io::{BufRead, BufReader},
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
 };
@@ -106,8 +109,119 @@ pub struct HistoryPage {
     pub revision: Option<String>,
 }
 
-fn command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+const REMOTE_PREFIX: &str = "ssh://";
+
+/// Splits an `ssh://host/path` location into its host and remote path.
+/// `ssh://host/~/path` is relative to the remote home, where SSH starts.
+pub fn remote_location(root: &Path) -> Option<(&str, &str)> {
+    let location = root.to_str()?.strip_prefix(REMOTE_PREFIX)?;
+    let (host, path) = location.split_at(location.find('/')?);
+    let path = match path.strip_prefix("/~") {
+        Some("") => ".",
+        Some(home) => home.strip_prefix('/')?,
+        None => path,
+    };
+    Some((host, path))
+}
+
+/// Reads `host:/path`, `host:~/path` (scp style) or `ssh://host/path` as a remote location.
+pub fn parse_remote(input: &str) -> Option<PathBuf> {
+    let input = input.trim();
+    let (host, path) = match input.strip_prefix(REMOTE_PREFIX) {
+        Some(rest) => rest.split_at(rest.find('/')?),
+        None => input.split_once(':')?,
+    };
+    let path = if path.starts_with('~') {
+        format!("/{path}")
+    } else {
+        path.to_owned()
+    };
+    let valid = !host.is_empty() && !host.contains('/') && path.starts_with('/');
+    valid.then(|| PathBuf::from(format!("{REMOTE_PREFIX}{host}{path}")))
+}
+
+/// Quotes one argument for the POSIX-style shell that SSH hands the command to.
+fn shell_quote(arg: &OsStr) -> OsString {
+    let text = arg.to_string_lossy();
+    OsString::from(format!("'{}'", text.replace('\'', "'\\''")))
+}
+
+/// One SSH session per host is shared across the many short Git calls a view makes.
+fn ssh(host: &str) -> Command {
+    #[cfg(not(test))]
+    let mut command = Command::new("ssh");
+    #[cfg(test)]
+    let mut command = Command::new(tests::fake_ssh());
+    command.args(["-o", "BatchMode=yes"]);
+    if cfg!(unix) {
+        command.args([
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            "ControlPath=~/.ssh/patchlook-%C",
+            "-o",
+            "ControlPersist=600",
+        ]);
+    }
+    command.args([host, "--"]);
+    command
+}
+
+/// A Git command whose arguments are quoted when it runs on a remote host.
+pub struct GitCommand {
+    command: Command,
+    remote: bool,
+}
+
+impl GitCommand {
+    pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        if self.remote {
+            self.command.arg(shell_quote(arg.as_ref()));
+        } else {
+            self.command.arg(arg);
+        }
+        self
+    }
+
+    pub fn args<I: IntoIterator<Item = S>, S: AsRef<OsStr>>(&mut self, args: I) -> &mut Self {
+        for arg in args {
+            self.arg(arg);
+        }
+        self
+    }
+}
+
+impl Deref for GitCommand {
+    type Target = Command;
+
+    fn deref(&self) -> &Command {
+        &self.command
+    }
+}
+
+impl DerefMut for GitCommand {
+    fn deref_mut(&mut self) -> &mut Command {
+        &mut self.command
+    }
+}
+
+fn command(root: &Path) -> GitCommand {
+    let (mut command, directory, remote) = match remote_location(root) {
+        Some((host, path)) => {
+            let mut command = ssh(host);
+            command.args(["env", "GIT_TERMINAL_PROMPT=0", "git"]);
+            (command, OsStr::new(path), true)
+        }
+        None => (Command::new("git"), root.as_os_str(), false),
+    };
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    // A GUI should not open a console window for every Git request on Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut command = GitCommand { command, remote };
     command
         .args([
             "--no-pager",
@@ -121,14 +235,7 @@ fn command(root: &Path) -> Command {
             "core.fsmonitor=false",
             "-C",
         ])
-        .arg(root)
-        .env("GIT_TERMINAL_PROMPT", "0");
-    // A GUI should not open a console window for every Git request on Windows.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+        .arg(directory);
     command
 }
 
@@ -172,6 +279,12 @@ impl Repository {
             false,
         )?;
         let root = path(bytes.strip_suffix(b"\n").unwrap_or(&bytes))?;
+        let root = match remote_location(directory) {
+            Some((host, _)) => {
+                PathBuf::from(format!("{REMOTE_PREFIX}{host}{}", root.to_string_lossy()))
+            }
+            None => root,
+        };
         Ok(Self { root })
     }
 
@@ -394,7 +507,7 @@ impl Repository {
         parse_numstat(&output(&mut cmd, false)?)
     }
 
-    fn commit_diff_command(&self, commit: &Commit) -> Command {
+    fn commit_diff_command(&self, commit: &Commit) -> GitCommand {
         let mut cmd = command(&self.root);
         if let Some(parent) = commit.parents.first() {
             cmd.args(["diff", parent, &commit.id]);
@@ -404,7 +517,7 @@ impl Repository {
         cmd
     }
 
-    fn change_diff_command(&self, change: &Change, comparison: &Comparison) -> Command {
+    fn change_diff_command(&self, change: &Change, comparison: &Comparison) -> GitCommand {
         let mut cmd = command(&self.root);
         if change.area == Area::Untracked {
             // Untracked files only exist when the working tree is a side.
@@ -506,7 +619,7 @@ impl Repository {
         {
             let mut cmd = self.change_diff_command(change, comparison);
             cmd.args(["--numstat", "-z", "--no-ext-diff", "--no-textconv", "--"])
-                .arg(null_device())
+                .arg(self.null_device())
                 .arg(&change.path);
             if let Some(lines) = parse_numstat(&output(&mut cmd, true)?)?
                 .into_values()
@@ -541,7 +654,7 @@ impl Repository {
         cmd.arg("--");
         if untracked {
             // Git's no-index mode recognizes the OS null device as an empty file.
-            cmd.arg(null_device());
+            cmd.arg(self.null_device());
         } else if let Some(previous) = &change.previous_path {
             cmd.arg(previous);
         }
@@ -578,7 +691,7 @@ impl Repository {
                 Comparison::Working if change.area == Area::Staged => {
                     Some(self.index_file(&change.path)?)
                 }
-                _ => match std::fs::read(self.root.join(&change.path)) {
+                _ => match self.worktree_file(&change.path) {
                     Ok(bytes) => Some(bytes),
                     Err(error)
                         if change.area == Area::Conflict
@@ -591,6 +704,40 @@ impl Repository {
             }
         };
         Ok(FileVersions { original, modified })
+    }
+
+    pub fn is_remote(&self) -> bool {
+        remote_location(&self.root).is_some()
+    }
+
+    fn null_device(&self) -> &'static str {
+        if cfg!(windows) && !self.is_remote() {
+            "NUL"
+        } else {
+            "/dev/null"
+        }
+    }
+
+    /// Reads a working-tree file, over SSH for a remote repository.
+    pub fn worktree_file(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        let Some((host, root)) = remote_location(&self.root) else {
+            return std::fs::read(self.root.join(path));
+        };
+        let file = Path::new(root).join(path);
+        let output = ssh(host)
+            .arg("cat")
+            .arg(shell_quote(file.as_os_str()))
+            .output()?;
+        if output.status.success() {
+            return Ok(output.stdout);
+        }
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let kind = if message.contains("No such file") {
+            std::io::ErrorKind::NotFound
+        } else {
+            std::io::ErrorKind::Other
+        };
+        Err(std::io::Error::new(kind, message))
     }
 
     fn index_file(&self, path: &Path) -> Result<Vec<u8>> {
@@ -623,10 +770,6 @@ impl Repository {
         )
         .map(Some)
     }
-}
-
-fn null_device() -> &'static str {
-    if cfg!(windows) { "NUL" } else { "/dev/null" }
 }
 
 fn parse_numstat(bytes: &[u8]) -> Result<HashMap<PathBuf, Option<DiffStats>>> {
@@ -783,6 +926,68 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// Stands in for ssh: drops options and host, then runs the joined command
+    /// through a shell exactly as the remote side would.
+    pub(super) fn fake_ssh() -> &'static Path {
+        static FAKE: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+        let directory = FAKE.get_or_init(|| {
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("ssh");
+            fs::write(
+                &script,
+                "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec sh -c \"$*\"\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            directory
+        });
+        Box::leak(directory.path().join("ssh").into_boxed_path())
+    }
+
+    #[test]
+    fn remote_locations_parse_scp_and_url_forms() {
+        for (input, expected) in [
+            ("box:/srv/repo", Some("ssh://box/srv/repo")),
+            ("user@box:~/code/repo", Some("ssh://user@box/~/code/repo")),
+            ("ssh://box/srv/repo", Some("ssh://box/srv/repo")),
+            ("box:relative", None),
+            ("/local/path", None),
+        ] {
+            assert_eq!(parse_remote(input), expected.map(PathBuf::from), "{input}");
+        }
+        assert_eq!(
+            remote_location(Path::new("ssh://box/~/code/repo")),
+            Some(("box", "code/repo"))
+        );
+        assert_eq!(remote_location(Path::new("/srv/repo")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_repositories_run_git_over_ssh_with_quoted_arguments() {
+        let (_temp, local) = fixture();
+        let name = "it's a $HOME file.txt";
+        fs::write(local.root.join(name), "before\n").unwrap();
+        commit(&local, "Initial");
+        fs::write(local.root.join(name), "after\n").unwrap();
+
+        let location = PathBuf::from(format!("ssh://box{}", local.root.display()));
+        let repo = Repository::open(&location).unwrap();
+        assert!(repo.is_remote());
+        assert_eq!(remote_location(&repo.root).unwrap().0, "box");
+        let changes = repo.changes(&Comparison::Working).unwrap();
+        assert_eq!(changes[0].path, PathBuf::from(name));
+        let patch = repo.patch(&changes[0], &Comparison::Working).unwrap();
+        assert!(patch.contains("-before\n+after"));
+        assert_eq!(repo.worktree_file(Path::new(name)).unwrap(), b"after\n");
+        let missing = repo.worktree_file(Path::new("missing")).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    }
 
     fn run(root: &Path, args: &[&str]) {
         output(command(root).args(args), false).unwrap();
