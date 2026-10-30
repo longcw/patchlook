@@ -105,5 +105,6 @@
   "compare_hint": "Ctrl/⌘-clique em outra linha para comparar",
   "open_remote": "Abrir repositório via SSH",
   "remote_placeholder": "host:/caminho/do/repo",
-  "remote_invalid": "Informe um remoto como host:/caminho ou host:~/caminho"
+  "remote_invalid": "Informe um remoto como host:/caminho ou host:~/caminho",
+  "switch_worktree": "Alternar worktree"
 }

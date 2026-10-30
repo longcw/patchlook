@@ -325,6 +325,9 @@ impl Default for Preferences {
 pub struct RecentRepository {
     pub path: PathBuf,
     pub viewed_branch: Option<String>,
+    /// The linked worktree last opened for this repository; None means the main one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<PathBuf>,
 }
 
 impl Preferences {
@@ -337,6 +340,7 @@ impl Preferences {
             self.recent_repositories.push(RecentRepository {
                 path: path.clone(),
                 viewed_branch: None,
+                worktree: None,
             });
         }
         self.sort_repositories();
@@ -371,6 +375,23 @@ impl Preferences {
             .find(|entry| entry.path == path)
         {
             entry.viewed_branch = reference;
+        }
+    }
+
+    pub fn worktree(&self, path: &std::path::Path) -> Option<&std::path::Path> {
+        self.recent_repositories
+            .iter()
+            .find(|entry| entry.path == path)
+            .and_then(|entry| entry.worktree.as_deref())
+    }
+
+    pub fn set_worktree(&mut self, path: &std::path::Path, worktree: Option<PathBuf>) {
+        if let Some(entry) = self
+            .recent_repositories
+            .iter_mut()
+            .find(|entry| entry.path == path)
+        {
+            entry.worktree = worktree;
         }
     }
 

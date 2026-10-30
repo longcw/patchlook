@@ -24,12 +24,15 @@ use gpui_kit::{
 };
 use patchlook::{
     external_open::{ApplicationIcon, FileToOpen, OpenWith, applications_for},
-    git::{Branch, Change, Commit, Comparison, DiffStats, HistoryPage, Repository, parse_remote},
+    git::{
+        Branch, Change, Commit, Comparison, DiffStats, HistoryPage, Repository, Worktree,
+        parse_remote,
+    },
     preferences::{Appearance, Language, Layout, Preferences},
 };
 use std::{
     ops::Range,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -246,6 +249,7 @@ pub struct Patchlook {
     repository: Option<Repository>,
     branch: String,
     branches: Vec<Branch>,
+    worktrees: Vec<Worktree>,
     repository_scroll: UniformListScrollHandle,
     branch_scroll: UniformListScrollHandle,
     view: View,
@@ -308,6 +312,7 @@ impl Patchlook {
             repository: None,
             branch: String::new(),
             branches: vec![],
+            worktrees: vec![],
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
             view: View::History,
@@ -429,7 +434,7 @@ impl Patchlook {
     fn viewed_branch(&self) -> Option<&str> {
         self.repository
             .as_ref()
-            .and_then(|repo| self.preferences.viewed_branch(&repo.root))
+            .and_then(|repo| self.preferences.viewed_branch(&repo.main))
     }
 
     fn viewed_branch_name(&self) -> String {
@@ -454,15 +459,31 @@ impl Patchlook {
         self.load_history_page(HistoryRequest::Branch(reference), cx);
     }
 
+    /// Opening a recent repository returns to the worktree it was last viewed in.
     fn load(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self
             .repository
             .as_ref()
-            .is_some_and(|repo| repo.root == path)
+            .is_some_and(|repo| repo.root == path || repo.main == path)
         {
             return;
         }
-        self.load_repository(path, cx);
+        let target = self
+            .preferences
+            .worktree(&path)
+            .map_or(path, Path::to_path_buf);
+        self.load_repository(target, cx);
+    }
+
+    fn switch_worktree(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !self.loading
+            && self
+                .repository
+                .as_ref()
+                .is_some_and(|repo| repo.root != path)
+        {
+            self.load_repository(path, cx);
+        }
     }
 
     /// Opening/refreshing a repository replaces its two snapshots. Tab changes never call this.
@@ -475,32 +496,53 @@ impl Patchlook {
         self.error = None;
         let preview = self.view != View::Repositories;
         let query = self.history.query.clone();
-        let reference = self.preferences.viewed_branch(&path).map(str::to_owned);
+        let recent = self.preferences.recent_repositories.clone();
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let repo = Repository::open(&path)?;
+                    // A remembered worktree that was since removed falls back to the main one.
+                    let repo = Repository::open(&path).or_else(|error| {
+                        recent
+                            .iter()
+                            .find(|entry| entry.worktree.as_ref() == Some(&path))
+                            .map_or(Err(error), |entry| Repository::open(&entry.path))
+                    })?;
+                    let reference = recent
+                        .iter()
+                        .find(|entry| entry.path == repo.main)
+                        .and_then(|entry| entry.viewed_branch.clone());
                     let branches = repo.branches()?;
+                    let worktrees = repo.worktrees()?;
                     let branch = repo.branch_name()?;
                     let page = repo.history_filtered(0, reference.as_deref(), &query)?;
                     let (first, prepared) =
                         first_history_row(&repo, &page, reference.is_none(), preview)?;
-                    anyhow::Ok((repo, branch, branches, page, first, prepared))
+                    anyhow::Ok((repo, branch, (branches, worktrees), page, first, prepared))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((repo, branch, branches, page, (working_changes, selected), prepared)) => {
+                    Ok((
+                        repo,
+                        branch,
+                        (branches, worktrees),
+                        page,
+                        (working_changes, selected),
+                        prepared,
+                    )) => {
                         let query = std::mem::take(&mut this.history.query);
                         this.history = HistoryState::new(this.preferences.layout, cx);
                         this.history.query = query;
                         this.repository_preview = false;
                         this.reset_copy_feedback();
-                        this.preferences.remember_repository(repo.root.clone());
+                        this.preferences.remember_repository(repo.main.clone());
+                        let linked = (repo.root != repo.main).then(|| repo.root.clone());
+                        this.preferences.set_worktree(&repo.main, linked);
                         this.repository = Some(repo);
                         this.branch = branch;
                         this.branches = branches;
+                        this.worktrees = worktrees;
                         this.save_preferences();
                         this.history.revision = page.revision;
                         this.history.commits = page.commits;
@@ -534,7 +576,7 @@ impl Patchlook {
             self.preferences
                 .recent_repositories
                 .iter()
-                .position(|entry| entry.path == repo.root)
+                .position(|entry| entry.path == repo.main)
         }) else {
             return;
         };
@@ -679,8 +721,8 @@ impl Patchlook {
                         if let Some(reference) = branch {
                             let repo = this.repository.as_ref().unwrap();
                             // Lazy first entry and Tab changes do not rewrite preferences.
-                            if this.preferences.viewed_branch(&repo.root) != reference.as_deref() {
-                                this.preferences.set_viewed_branch(&repo.root, reference);
+                            if this.preferences.viewed_branch(&repo.main) != reference.as_deref() {
+                                this.preferences.set_viewed_branch(&repo.main, reference);
                                 this.save_preferences();
                             }
                         }
@@ -1008,6 +1050,20 @@ fn first_history_row(
     Ok(((working_changes, selected), prepared))
 }
 
+/// A worktree's folder name and the branch checked out there.
+fn worktree_label(worktree: &Worktree) -> String {
+    let folder = worktree
+        .path
+        .file_name()
+        .unwrap_or(worktree.path.as_os_str())
+        .to_string_lossy();
+    let branch = worktree
+        .branch
+        .clone()
+        .unwrap_or_else(|| worktree.head.chars().take(7).collect());
+    format!("{folder} · {branch}")
+}
+
 fn apply_language(language: Language, cx: &mut App) {
     let language = language.resolve(sys_locale::get_locales());
     let code = language.code().expect("Resolved language has a locale");
@@ -1181,6 +1237,51 @@ impl Patchlook {
         )
     }
 
+    /// Switches among the repository's worktrees without adding Recent entries.
+    fn worktree_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let app = cx.entity().downgrade();
+        let current = self.repository.as_ref().map(|repo| repo.root.clone());
+        let label = self
+            .worktrees
+            .iter()
+            .find(|worktree| Some(&worktree.path) == current.as_ref())
+            .map(worktree_label)
+            .unwrap_or_default();
+        Button::new("worktree")
+            .icon(IconName::FolderOpen)
+            .child(div().max_w(px(220.)).truncate().text_xs().child(label))
+            .small()
+            .ghost()
+            .tooltip(tr("switch_worktree"))
+            .accessibility_label(tr("switch_worktree"))
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, cx| {
+                let Some(entity) = app.upgrade() else {
+                    return menu;
+                };
+                let this = entity.read(cx);
+                let current = this.repository.as_ref().map(|repo| repo.root.clone());
+                this.worktrees.iter().fold(
+                    menu.min_w(px(260.))
+                        .max_h(px(360.))
+                        .scrollable(true)
+                        .check_side(component::Side::Right),
+                    |menu, worktree| {
+                        let app = app.clone();
+                        let path = worktree.path.clone();
+                        menu.item(
+                            PopupMenuItem::new(worktree_label(worktree))
+                                .checked(current.as_ref() == Some(&worktree.path))
+                                .on_click(move |_, _, cx| {
+                                    let _ = app.update(cx, |this, cx| {
+                                        this.switch_worktree(path.clone(), cx)
+                                    });
+                                }),
+                        )
+                    },
+                )
+            })
+    }
+
     fn language_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let app = cx.entity().downgrade();
         Button::new("language")
@@ -1347,9 +1448,9 @@ impl Patchlook {
             .replace("{branch}", &branch)
             .replace("{worktree}", &self.branch);
         let repository_name = self.repository.as_ref().map(|repo| {
-            repo.root
+            repo.main
                 .file_name()
-                .unwrap_or(repo.root.as_os_str())
+                .unwrap_or(repo.main.as_os_str())
                 .to_string_lossy()
                 .into_owned()
         });
@@ -1393,6 +1494,9 @@ impl Patchlook {
                         .truncate()
                         .child(repository_name.unwrap_or_else(|| tr("app_name").to_owned())),
                 )
+                .when(self.worktrees.len() > 1, |view| {
+                    view.child(div().occlude().child(self.worktree_menu(cx)))
+                })
                 .when(self.repository.is_some(), |view| {
                     view.child(
                         h_flex()
@@ -1545,7 +1649,7 @@ impl Patchlook {
         let selected = self
             .repository
             .as_ref()
-            .is_some_and(|repo| repo.root == path);
+            .is_some_and(|repo| repo.main == path);
         div().h(px(50.)).px_2().pb_1().child(
             Button::new(("repository", index))
                 .custom(
@@ -2835,6 +2939,7 @@ mod tests {
             repository: None,
             branch: "main".into(),
             branches: vec![],
+            worktrees: vec![],
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
             view: View::History,
@@ -2870,6 +2975,7 @@ mod tests {
                     let mut app = test_app(window, cx);
                     app.repository = Some(Repository {
                         root: directory.path().into(),
+                        main: directory.path().into(),
                     });
                     app.history.files.loaded = true;
                     app.history.files.changes = names
@@ -3587,6 +3693,80 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn worktrees_share_one_recent_entry_and_reopen_where_left(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let main = directory.path().join("project");
+        let linked = directory.path().join("project-feature");
+        std::fs::create_dir(&main).unwrap();
+        git(&main, &["init", "-b", "main"]);
+        std::fs::write(main.join("file.txt"), "one\n").unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "-qm", "Initial"]);
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let (main, linked) = (main.canonicalize().unwrap(), linked.canonicalize().unwrap());
+        let (_, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        let open = |path: &std::path::Path, switch: bool, cx: &mut TestAppContext| {
+            app.update(cx, |app, cx| {
+                if switch {
+                    app.switch_worktree(path.to_owned(), cx)
+                } else {
+                    app.load(path.to_owned(), cx)
+                }
+            });
+            cx.run_until_parked();
+        };
+        let state = |cx: &mut TestAppContext| {
+            app.read_with(cx, |app, _| {
+                let recent: Vec<_> = app
+                    .preferences
+                    .recent_repositories
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                let remembered = app.preferences.worktree(&main).map(Path::to_path_buf);
+                (
+                    app.repository.as_ref().unwrap().root.clone(),
+                    recent,
+                    remembered,
+                )
+            })
+        };
+
+        open(&linked, false, cx);
+        assert_eq!(
+            state(cx),
+            (linked.clone(), vec![main.clone()], Some(linked.clone()))
+        );
+        app.read_with(cx, |app, _| assert_eq!(app.worktrees.len(), 2));
+        open(&main, true, cx);
+        assert_eq!(state(cx), (main.clone(), vec![main.clone()], None));
+        open(&linked, true, cx);
+        // Reopening the Recent entry returns to the worktree viewed last.
+        app.update(cx, |app, _| app.repository = None);
+        open(&main, false, cx);
+        assert_eq!(
+            state(cx),
+            (linked.clone(), vec![main.clone()], Some(linked))
+        );
+    }
+
+    #[gpui_kit::test]
     fn tabs_retain_snapshots_without_rereading_git(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let directory = tempfile::tempdir().unwrap();
@@ -3885,7 +4065,10 @@ mod tests {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| {
                     let mut app = test_app(window, cx);
-                    app.repository = Some(Repository { root });
+                    app.repository = Some(Repository {
+                        main: root.clone(),
+                        root,
+                    });
                     app.history.files.loaded = true;
                     app.history.files.changes = ["current.rs", "next.rs"]
                         .map(|path| Change {

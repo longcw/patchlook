@@ -105,5 +105,6 @@
   "compare_hint": "Ctrl/⌘ を押しながら別の行をクリックして比較",
   "open_remote": "SSH でリポジトリを開く",
   "remote_placeholder": "host:/path/to/repo",
-  "remote_invalid": "リモートは host:/パス または host:~/パス の形式で入力してください"
+  "remote_invalid": "リモートは host:/パス または host:~/パス の形式で入力してください",
+  "switch_worktree": "ワークツリーを切り替え"
 }

@@ -14,7 +14,18 @@ pub const HISTORY_PAGE_SIZE: usize = 100;
 
 #[derive(Clone, Debug)]
 pub struct Repository {
+    /// The opened worktree's top level.
     pub root: PathBuf,
+    /// The main worktree, which names the repository and keys its settings.
+    pub main: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    /// The checked-out branch's short name; None when HEAD is detached.
+    pub branch: Option<String>,
+    pub head: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +149,14 @@ pub fn parse_remote(input: &str) -> Option<PathBuf> {
     };
     let valid = !host.is_empty() && !host.contains('/') && path.starts_with('/');
     valid.then(|| PathBuf::from(format!("{REMOTE_PREFIX}{host}{path}")))
+}
+
+/// Keeps a path Git reported on a remote host addressable through the same host.
+fn localize(location: &Path, path: PathBuf) -> PathBuf {
+    match remote_location(location) {
+        Some((host, _)) => PathBuf::from(format!("{REMOTE_PREFIX}{host}{}", path.display())),
+        None => path,
+    }
 }
 
 /// Quotes one argument for the POSIX-style shell that SSH hands the command to.
@@ -279,13 +298,49 @@ impl Repository {
             false,
         )?;
         let root = path(bytes.strip_suffix(b"\n").unwrap_or(&bytes))?;
-        let root = match remote_location(directory) {
-            Some((host, _)) => {
-                PathBuf::from(format!("{REMOTE_PREFIX}{host}{}", root.to_string_lossy()))
-            }
-            None => root,
+        let mut repo = Self {
+            root: localize(directory, root),
+            main: PathBuf::new(),
         };
-        Ok(Self { root })
+        repo.main = repo
+            .worktrees()?
+            .into_iter()
+            .next()
+            .map_or_else(|| repo.root.clone(), |main| main.path);
+        Ok(repo)
+    }
+
+    /// Every worktree of the repository, the main one first.
+    pub fn worktrees(&self) -> Result<Vec<Worktree>> {
+        let text = text(output(
+            command(&self.root).args(["worktree", "list", "--porcelain"]),
+            false,
+        )?)?;
+        let mut worktrees = Vec::new();
+        for record in text.split("\n\n") {
+            let mut worktree = None;
+            for line in record.lines() {
+                if let Some(path) = line.strip_prefix("worktree ") {
+                    worktree = Some(Worktree {
+                        path: localize(&self.root, PathBuf::from(path)),
+                        branch: None,
+                        head: String::new(),
+                    });
+                } else if let Some(worktree) = &mut worktree {
+                    if let Some(head) = line.strip_prefix("HEAD ") {
+                        worktree.head = head.to_owned();
+                    } else if let Some(branch) = line.strip_prefix("branch ") {
+                        let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+                        worktree.branch = Some(short.to_owned());
+                    }
+                }
+            }
+            // A bare main repository has no files to show.
+            if !record.lines().any(|line| line == "bare") {
+                worktrees.extend(worktree);
+            }
+        }
+        Ok(worktrees)
     }
 
     fn has_head(&self) -> Result<bool> {
@@ -950,6 +1005,29 @@ mod tests {
     }
 
     #[test]
+    fn linked_worktrees_name_the_main_repository() {
+        let (_temp, main) = fixture();
+        fs::write(main.root.join("file.txt"), "one\n").unwrap();
+        commit(&main, "Initial");
+        let elsewhere = tempfile::tempdir().unwrap();
+        let linked_path = elsewhere.path().join("linked");
+        output(
+            command(&main.root)
+                .args(["worktree", "add", "-q", "-b", "feature"])
+                .arg(&linked_path),
+            false,
+        )
+        .unwrap();
+        let linked = Repository::open(&linked_path).unwrap();
+        assert_eq!(linked.main, main.root);
+        let worktrees = linked.worktrees().unwrap();
+        assert_eq!(worktrees.len(), 2);
+        assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
+        assert_eq!(worktrees[1].branch.as_deref(), Some("feature"));
+        assert_eq!(worktrees[1].path, linked.root);
+    }
+
+    #[test]
     fn remote_locations_parse_scp_and_url_forms() {
         for (input, expected) in [
             ("box:/srv/repo", Some("ssh://box/srv/repo")),
@@ -980,6 +1058,8 @@ mod tests {
         let repo = Repository::open(&location).unwrap();
         assert!(repo.is_remote());
         assert_eq!(remote_location(&repo.root).unwrap().0, "box");
+        // Worktree paths reported by the host stay reachable through it.
+        assert_eq!(repo.main, repo.root);
         let changes = repo.changes(&Comparison::Working).unwrap();
         assert_eq!(changes[0].path, PathBuf::from(name));
         let patch = repo.patch(&changes[0], &Comparison::Working).unwrap();
