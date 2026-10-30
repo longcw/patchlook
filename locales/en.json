@@ -110,5 +110,15 @@
   "fork_point": "Forked from {branch}",
   "all_branches": "All branches",
   "open_in_compare": "Open in Compare",
-  "search_branches": "Filter branches"
+  "search_branches": "Filter branches",
+  "worktrees": "Worktrees",
+  "search_worktrees": "Filter worktrees",
+  "recent_worktrees": "Recent",
+  "repository_worktrees": "This repository",
+  "open_pull_request": "Open pull request on GitHub",
+  "open_commit_on_github": "Open commit on GitHub",
+  "open_in_zed": "Open worktree in Zed",
+  "open_file_in_zed": "Open file in Zed",
+  "open_line_in_zed": "Open line {line} in Zed",
+  "compare_with_selected": "Compare with selected"
 }

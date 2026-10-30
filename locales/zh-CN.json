@@ -110,5 +110,15 @@
   "fork_point": "从 {branch} 分出",
   "all_branches": "所有分支",
   "open_in_compare": "在比较中打开",
-  "search_branches": "筛选分支"
+  "search_branches": "筛选分支",
+  "worktrees": "工作树",
+  "search_worktrees": "筛选工作树",
+  "recent_worktrees": "最近",
+  "repository_worktrees": "此仓库",
+  "open_pull_request": "在 GitHub 上打开拉取请求",
+  "open_commit_on_github": "在 GitHub 上打开提交",
+  "open_in_zed": "在 Zed 中打开工作树",
+  "open_file_in_zed": "在 Zed 中打开文件",
+  "open_line_in_zed": "在 Zed 中打开第 {line} 行",
+  "compare_with_selected": "与所选项比较"
 }

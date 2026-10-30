@@ -10,10 +10,13 @@ use gpui_kit::{
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, Theme, ThemeMode, TitleBar,
         button::{Button, ButtonCustomVariant, ButtonVariants},
-        diff::{Diff, DiffChangeIndicator, DiffFile, DiffHunkSeparator, DiffMode, DiffState},
+        diff::{
+            Diff, DiffChangeIndicator, DiffFile, DiffHunkSeparator, DiffLinePosition, DiffMode,
+            DiffState,
+        },
         h_flex,
         input::{Input, InputEvent as TextInputEvent, InputState},
-        menu::{DropdownMenu, PopupMenuItem},
+        menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
         resizable::{h_resizable, resizable_panel, v_resizable},
         scroll::{Scrollbar, ScrollbarMode},
         tooltip::Tooltip,
@@ -28,8 +31,10 @@ use patchlook::{
         ALL_BRANCHES, Branch, BranchScope, Change, Commit, Comparison, DiffStats, HistoryPage,
         RefKind, Repository, Worktree, parse_remote,
     },
+    github,
     graph::{Graph, GraphRow},
     preferences::{Appearance, Language, Layout, Preferences},
+    zed,
 };
 use std::{
     ops::Range,
@@ -326,6 +331,9 @@ pub struct Patchlook {
     repository_scroll: UniformListScrollHandle,
     branch_scroll: UniformListScrollHandle,
     toggled_branch_folders: std::collections::HashSet<String>,
+    branch_tab: BranchTab,
+    /// The diff line under the pointer, which the diff's context menu acts on.
+    hovered_line: Option<DiffLinePosition>,
     view: View,
     history: HistoryState,
     repository_preview: bool,
@@ -380,8 +388,9 @@ impl Patchlook {
                     this.history_search.update(cx, |input, cx| {
                         input.set_placeholder(tr("search_commits_placeholder"), window, cx);
                     });
+                    let placeholder = this.branch_tab.placeholder();
                     this.branch_search.update(cx, |input, cx| {
-                        input.set_placeholder(tr("search_branches"), window, cx);
+                        input.set_placeholder(tr(placeholder), window, cx);
                     });
                 }
             }),
@@ -401,6 +410,8 @@ impl Patchlook {
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
             toggled_branch_folders: Default::default(),
+            branch_tab: BranchTab::Branches,
+            hovered_line: None,
             view: View::History,
             repository_preview: false,
 
@@ -624,6 +635,9 @@ impl Patchlook {
                                 || !worktrees.iter().any(|worktree| worktree.path == entry.path)
                         });
                         this.preferences.remember_repository(repo.main.clone());
+                        if worktrees.len() > 1 {
+                            this.preferences.remember_worktree(repo.root.clone());
+                        }
                         let linked = (repo.root != repo.main).then(|| repo.root.clone());
                         this.preferences.set_worktree(&repo.main, linked);
                         this.repository = Some(repo);
@@ -1034,6 +1048,123 @@ impl Patchlook {
             .filter(|index| *index < self.active_files().changes.len())
     }
 
+    /// Runs a link lookup off the main thread and opens the web page it finds.
+    fn open_link(
+        &mut self,
+        job: impl FnOnce(Repository) -> anyhow::Result<Option<String>> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { job(repo) }).await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(Some(url)) => cx.open_url(&url),
+                    Ok(None) => {}
+                    Err(error) => this.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_in_zed(&mut self, file: Option<(PathBuf, usize)>, cx: &mut Context<Self>) {
+        self.open_link(
+            move |repo| {
+                let file = file.as_ref().map(|(path, line)| (path.as_path(), *line));
+                zed::open(&repo, file).map(|_| None)
+            },
+            cx,
+        );
+    }
+
+    /// The selected file at a diff line, for opening in an editor.
+    fn line_target(&self, position: Option<&DiffLinePosition>) -> Option<(PathBuf, usize)> {
+        let files = self.active_files();
+        let change = files.changes.get(files.selected_file?)?;
+        Some((
+            change.path.clone(),
+            position.map_or(1, DiffLinePosition::line),
+        ))
+    }
+
+    fn commit_menu(
+        &self,
+        row: Row,
+        menu: component::menu::PopupMenu,
+        cx: &mut Context<Self>,
+    ) -> component::menu::PopupMenu {
+        let app = cx.entity().downgrade();
+        let action = move |handler: fn(&mut Self, Row, &mut Context<Self>)| {
+            let app = app.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                let _ = app.update(cx, |this, cx| handler(this, row, cx));
+            }
+        };
+        let id = match row {
+            Row::Commit(index) => self.history.commits.get(index).map(|c| c.id.clone()),
+            Row::Working => None,
+        };
+        let commit_items = |menu: component::menu::PopupMenu| {
+            menu.item(PopupMenuItem::new(tr("open_pull_request")).on_click(action(
+                |this, row, cx| {
+                    if let Some(id) = this.row_commit_id(row) {
+                        this.open_link(
+                            move |repo| github::pull_request_url(&repo, &id).map(Some),
+                            cx,
+                        );
+                    }
+                },
+            )))
+            .item(
+                PopupMenuItem::new(tr("open_commit_on_github")).on_click(action(
+                    |this, row, cx| {
+                        if let Some(id) = this.row_commit_id(row) {
+                            this.open_link(
+                                move |repo| {
+                                    let remotes = github::remotes(&repo)?;
+                                    let remote = remotes.first().ok_or_else(|| {
+                                        anyhow::anyhow!("This repository has no GitHub remote")
+                                    })?;
+                                    Ok(Some(github::commit_url(remote, &id)))
+                                },
+                                cx,
+                            );
+                        }
+                    },
+                )),
+            )
+            .item(
+                PopupMenuItem::new(tr("copy_commit_id")).on_click(action(|this, row, cx| {
+                    if let Some(id) = this.row_commit_id(row) {
+                        cx.write_to_clipboard(ClipboardItem::new_string(id));
+                    }
+                })),
+            )
+            .separator()
+        };
+        menu.when(id.is_some(), commit_items)
+            .item(
+                PopupMenuItem::new(tr("open_in_zed"))
+                    .on_click(action(|this, _, cx| this.open_in_zed(None, cx))),
+            )
+            .item(
+                PopupMenuItem::new(tr("compare_with_selected"))
+                    .disabled(self.history.anchor.is_none_or(|anchor| anchor == row))
+                    .on_click(action(|this, row, cx| this.select_row(row, true, cx))),
+            )
+    }
+
+    fn row_commit_id(&self, row: Row) -> Option<String> {
+        match row {
+            Row::Commit(index) => self.history.commits.get(index).map(|c| c.id.clone()),
+            Row::Working => None,
+        }
+    }
+
     /// Repos shows files or a diff in one pane; Compare shows both side by side.
     fn open_in_compare_button(&self, cx: &mut Context<Self>) -> Button {
         icon_button("open-in-compare", IconName::ExternalLink, "open_in_compare")
@@ -1118,12 +1249,37 @@ impl Patchlook {
         self.history_search.update(cx, |input, cx| {
             input.set_placeholder(tr("search_commits_placeholder"), window, cx);
         });
+        let placeholder = self.branch_tab.placeholder();
         self.branch_search.update(cx, |input, cx| {
-            input.set_placeholder(tr("search_branches"), window, cx);
+            input.set_placeholder(tr(placeholder), window, cx);
         });
         self.save_preferences();
         cx.notify();
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BranchTab {
+    Branches,
+    Worktrees,
+}
+
+impl BranchTab {
+    fn placeholder(self) -> &'static str {
+        match self {
+            Self::Branches => "search_branches",
+            Self::Worktrees => "search_worktrees",
+        }
+    }
+}
+
+/// A row of the worktree list.
+enum WorktreeItem {
+    Section(&'static str),
+    /// A worktree opened lately, possibly of another repository.
+    Recent(PathBuf),
+    /// One of the current repository's worktrees.
+    Current(usize),
 }
 
 /// A row of the branch tree.
@@ -2043,8 +2199,70 @@ impl Patchlook {
         collapsed_by_default == self.toggled_branch_folders.contains(key)
     }
 
+    /// Worktrees opened lately in any repository, then the current repository's.
+    fn worktree_items(&self, cx: &App) -> Vec<WorktreeItem> {
+        let query = self.branch_search.read(cx).value().trim().to_lowercase();
+        let matches = |path: &Path, branch: Option<&str>| {
+            query.is_empty()
+                || path.to_string_lossy().to_lowercase().contains(&query)
+                || branch.is_some_and(|branch| branch.to_lowercase().contains(&query))
+        };
+        let recent: Vec<_> = self
+            .preferences
+            .recent_worktrees
+            .iter()
+            .filter(|path| {
+                !self
+                    .worktrees
+                    .iter()
+                    .any(|worktree| &worktree.path == *path)
+            })
+            .filter(|path| matches(path, None))
+            .map(|path| WorktreeItem::Recent(path.clone()))
+            .collect();
+        let mut items = Vec::new();
+        if !recent.is_empty() {
+            items.push(WorktreeItem::Section("recent_worktrees"));
+            items.extend(recent);
+        }
+        if self.repository.is_some() {
+            items.push(WorktreeItem::Section("repository_worktrees"));
+            items.extend(
+                self.worktrees
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, worktree)| matches(&worktree.path, worktree.branch.as_deref()))
+                    .map(|(index, _)| WorktreeItem::Current(index)),
+            );
+        }
+        items
+    }
+
+    fn set_branch_tab(&mut self, tab: BranchTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.branch_tab = tab;
+        self.branch_search.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(tr(tab.placeholder()), window, cx);
+        });
+        self.branch_scroll = UniformListScrollHandle::new();
+        cx.notify();
+    }
+
     fn branch_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.branch_items(cx).len();
+        let count = match self.branch_tab {
+            BranchTab::Branches => self.branch_items(cx).len(),
+            BranchTab::Worktrees => self.worktree_items(cx).len(),
+        };
+        let tab = |id: &'static str, label: String, tab: BranchTab, cx: &mut Context<Self>| {
+            Button::new(id)
+                .label(label)
+                .xsmall()
+                .ghost()
+                .selected(self.branch_tab == tab)
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.set_branch_tab(tab, window, cx)),
+                )
+        };
         v_flex()
             .size_full()
             .min_h_0()
@@ -2053,12 +2271,20 @@ impl Patchlook {
                 h_flex()
                     .flex_none()
                     .h(px(32.))
-                    .px_3()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(tr("branches"))
-                    .child(self.branches.len().to_string()),
+                    .px_2()
+                    .gap_1()
+                    .child(tab(
+                        "branches-tab",
+                        format!("{} {}", tr("branches"), self.branches.len()),
+                        BranchTab::Branches,
+                        cx,
+                    ))
+                    .child(tab(
+                        "worktrees-tab",
+                        format!("{} {}", tr("worktrees"), self.worktrees.len()),
+                        BranchTab::Worktrees,
+                        cx,
+                    )),
             )
             .child(
                 div()
@@ -2090,13 +2316,26 @@ impl Patchlook {
                             "branches-list",
                             count,
                             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                let items = this.branch_items(cx);
-                                range
-                                    .filter_map(|index| {
-                                        let item = items.get(index)?;
-                                        Some(this.branch_row(index, item, cx))
-                                    })
-                                    .collect::<Vec<_>>()
+                                match this.branch_tab {
+                                    BranchTab::Branches => {
+                                        let items = this.branch_items(cx);
+                                        range
+                                            .filter_map(|index| {
+                                                let item = items.get(index)?;
+                                                Some(this.branch_row(index, item, cx))
+                                            })
+                                            .collect::<Vec<_>>()
+                                    }
+                                    BranchTab::Worktrees => {
+                                        let items = this.worktree_items(cx);
+                                        range
+                                            .filter_map(|index| {
+                                                let item = items.get(index)?;
+                                                Some(this.worktree_row(index, item, cx))
+                                            })
+                                            .collect::<Vec<_>>()
+                                    }
+                                }
                             }),
                         )
                         .track_scroll(&self.branch_scroll)
@@ -2105,6 +2344,83 @@ impl Patchlook {
                     .child(list_scrollbar("branches-scrollbar", &self.branch_scroll)),
             )
             .into_any_element()
+    }
+
+    fn worktree_row(&self, index: usize, item: &WorktreeItem, cx: &mut Context<Self>) -> Div {
+        let (path, label, caption) = match item {
+            WorktreeItem::Section(key) => {
+                return div()
+                    .h(px(30.))
+                    .px_3()
+                    .pt_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(tr(key));
+            }
+            WorktreeItem::Recent(path) => {
+                let folder = path.file_name().unwrap_or(path.as_os_str());
+                let parent = path.parent().map(|parent| parent.display().to_string());
+                (path.clone(), folder.to_string_lossy().into_owned(), parent)
+            }
+            WorktreeItem::Current(index) => {
+                let worktree = &self.worktrees[*index];
+                (worktree.path.clone(), worktree_label(worktree), None)
+            }
+        };
+        let current = self
+            .repository
+            .as_ref()
+            .is_some_and(|repo| repo.root == path);
+        let recent = matches!(item, WorktreeItem::Recent(_));
+        div().h(px(30.)).px_2().pb_1().child(
+            Button::new(("worktree", index))
+                .custom(
+                    ButtonCustomVariant::new(cx)
+                        .hover(cx.theme().list_hover)
+                        .active(cx.theme().secondary_active),
+                )
+                .selected(current)
+                .w_full()
+                .h_full()
+                .justify_start()
+                .disabled(self.loading)
+                .tooltip(path.display().to_string())
+                .accessibility_label(label.clone())
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            Icon::new(if current {
+                                IconName::Eye
+                            } else {
+                                IconName::FolderOpen
+                            })
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(div().flex_none().text_sm().child(label))
+                        .when_some(caption, |row, caption| {
+                            row.child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(caption),
+                            )
+                        }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if recent {
+                        this.load(path.clone(), cx);
+                    } else {
+                        this.switch_worktree(path.clone(), cx);
+                    }
+                })),
+        )
     }
 
     fn branch_row(&self, index: usize, item: &BranchItem, cx: &mut Context<Self>) -> Div {
@@ -2757,7 +3073,7 @@ impl Patchlook {
                                 range
                                     .map(|index| {
                                         if index == this.history.row_count() {
-                                            this.load_more_row(cx)
+                                            this.load_more_row(cx).into_any_element()
                                         } else {
                                             this.history_row(index, cx)
                                         }
@@ -2838,7 +3154,7 @@ impl Patchlook {
         )
     }
 
-    fn history_row(&self, index: usize, cx: &mut Context<Self>) -> Div {
+    fn history_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let row = self.history.row_at(index);
         let scope = self.history.scope.as_ref();
         let (subject, highlights, author, date, labels, inherited, graph) = match row {
@@ -2959,6 +3275,15 @@ impl Patchlook {
                         })),
                 ),
             )
+            .id(("history-row", index))
+            .context_menu({
+                let app = cx.entity().downgrade();
+                move |menu, _, cx| match app.upgrade() {
+                    Some(app) => app.update(cx, |this, cx| this.commit_menu(row, menu, cx)),
+                    None => menu,
+                }
+            })
+            .into_any_element()
     }
 
     /// Names both sides while two rows are compared.
@@ -3029,16 +3354,64 @@ impl Patchlook {
         } else if let Some(image) = &self.active_files().image {
             image.clone().into_any_element()
         } else if self.active_files().selected_file.is_some() {
-            Diff::new(&self.active_files().diff)
-                .when_some(
-                    cx.theme().highlight_theme.style.editor_foreground,
-                    |diff, color| diff.text_color(color),
-                )
-                .change_indicator(DiffChangeIndicator::Bars)
-                .header_visible(false)
-                .soft_wrap(self.preferences.soft_wrap)
-                .hunk_separator(DiffHunkSeparator::Wave)
+            let app = cx.entity().downgrade();
+            let hover_app = app.clone();
+            let click_app = app.clone();
+            div()
+                .id("diff-lines")
                 .size_full()
+                .child(
+                    Diff::new(&self.active_files().diff)
+                        .when_some(
+                            cx.theme().highlight_theme.style.editor_foreground,
+                            |diff, color| diff.text_color(color),
+                        )
+                        .change_indicator(DiffChangeIndicator::Bars)
+                        .header_visible(false)
+                        .soft_wrap(self.preferences.soft_wrap)
+                        .hunk_separator(DiffHunkSeparator::Wave)
+                        .on_line_hover(move |position, _, cx| {
+                            let _ = hover_app.update(cx, |this, _| {
+                                this.hovered_line = position.cloned();
+                            });
+                        })
+                        // Cmd/Ctrl-click opens the line in Zed, like an editor's go-to.
+                        .on_line_click(move |position, event, _, cx| {
+                            let modifiers = event.modifiers();
+                            if modifiers.platform || modifiers.control {
+                                let _ = click_app.update(cx, |this, cx| {
+                                    let target = this.line_target(Some(position));
+                                    if target.is_some() {
+                                        this.open_in_zed(target, cx);
+                                    }
+                                });
+                            }
+                        })
+                        .size_full(),
+                )
+                .context_menu(move |menu, _, cx| {
+                    let Some(entity) = app.upgrade() else {
+                        return menu;
+                    };
+                    let this = entity.read(cx);
+                    let line = this.line_target(this.hovered_line.as_ref());
+                    let file = this.line_target(None);
+                    let open = |target: Option<(PathBuf, usize)>| {
+                        let app = app.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            let _ = app.update(cx, |this, cx| this.open_in_zed(target.clone(), cx));
+                        }
+                    };
+                    menu.when_some(
+                        line.clone().filter(|_| this.hovered_line.is_some()),
+                        |menu, target| {
+                            let label =
+                                tr("open_line_in_zed").replace("{line}", &target.1.to_string());
+                            menu.item(PopupMenuItem::new(label).on_click(open(line.clone())))
+                        },
+                    )
+                    .item(PopupMenuItem::new(tr("open_file_in_zed")).on_click(open(file)))
+                })
                 .into_any_element()
         } else if self.history.row_count() == 0 {
             if self.history.query.is_empty() {
@@ -3410,6 +3783,8 @@ mod tests {
             repository_scroll: UniformListScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
             toggled_branch_folders: Default::default(),
+            branch_tab: BranchTab::Branches,
+            hovered_line: None,
             view: View::History,
             repository_preview: false,
 
@@ -4246,7 +4621,7 @@ mod tests {
             ],
         );
         let (main, linked) = (main.canonicalize().unwrap(), linked.canonicalize().unwrap());
-        let (_, app) = cx.update(|cx| {
+        let (handle, app) = cx.update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| {
                     let mut app = test_app(window, cx);
@@ -4291,6 +4666,44 @@ mod tests {
             (linked.clone(), vec![main.clone()], Some(linked.clone()))
         );
         app.read_with(cx, |app, _| assert_eq!(app.worktrees.len(), 2));
+        // Worktrees of other repositories opened lately head the Worktrees tab.
+        let elsewhere = PathBuf::from("/elsewhere/other-feature");
+        let rows = |cx: &mut TestAppContext| {
+            app.update(cx, |app, cx| {
+                app.worktree_items(cx)
+                    .into_iter()
+                    .map(|item| match item {
+                        WorktreeItem::Section(key) => key.to_owned(),
+                        WorktreeItem::Recent(path) => path.display().to_string(),
+                        WorktreeItem::Current(index) => worktree_label(&app.worktrees[index]),
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        app.update(cx, |app, _| {
+            app.preferences.remember_worktree(elsewhere.clone())
+        });
+        let recent = [
+            "recent_worktrees".to_owned(),
+            elsewhere.display().to_string(),
+        ];
+        let current = ["project · main", "project-feature · feature"].map(str::to_owned);
+        let expected = [&recent[..], &["repository_worktrees".to_owned()], &current].concat();
+        assert_eq!(rows(cx), expected);
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                app.branch_search
+                    .update(cx, |input, cx| input.set_value("feature", window, cx))
+            })
+        })
+        .unwrap();
+        let expected = [
+            &recent[..],
+            &["repository_worktrees".to_owned()],
+            &current[1..],
+        ]
+        .concat();
+        assert_eq!(rows(cx), expected);
         open(&main, true, cx);
         assert_eq!(state(cx), (main.clone(), vec![main.clone()], None));
         open(&linked, true, cx);

@@ -394,6 +394,19 @@ impl Repository {
         }))
     }
 
+    /// Each remote's name and fetch URL.
+    pub fn remote_urls(&self) -> Result<Vec<(String, String)>> {
+        let text = text(output(command(&self.root).args(["remote", "-v"]), false)?)?;
+        Ok(text
+            .lines()
+            .filter(|line| line.ends_with("(fetch)"))
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((fields.next()?.to_owned(), fields.next()?.to_owned()))
+            })
+            .collect())
+    }
+
     /// Every worktree of the repository, the main one first.
     pub fn worktrees(&self) -> Result<Vec<Worktree>> {
         let text = text(output(

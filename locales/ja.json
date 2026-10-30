@@ -110,5 +110,15 @@
   "fork_point": "{branch} から分岐",
   "all_branches": "すべてのブランチ",
   "open_in_compare": "比較で開く",
-  "search_branches": "ブランチを絞り込む"
+  "search_branches": "ブランチを絞り込む",
+  "worktrees": "ワークツリー",
+  "search_worktrees": "ワークツリーを絞り込む",
+  "recent_worktrees": "最近",
+  "repository_worktrees": "このリポジトリ",
+  "open_pull_request": "GitHub でプルリクエストを開く",
+  "open_commit_on_github": "GitHub でコミットを開く",
+  "open_in_zed": "Zed でワークツリーを開く",
+  "open_file_in_zed": "Zed でファイルを開く",
+  "open_line_in_zed": "Zed で {line} 行目を開く",
+  "compare_with_selected": "選択項目と比較"
 }

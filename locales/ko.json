@@ -110,5 +110,15 @@
   "fork_point": "{branch}에서 분기",
   "all_branches": "모든 브랜치",
   "open_in_compare": "비교에서 열기",
-  "search_branches": "브랜치 필터"
+  "search_branches": "브랜치 필터",
+  "worktrees": "워크트리",
+  "search_worktrees": "워크트리 필터",
+  "recent_worktrees": "최근",
+  "repository_worktrees": "이 저장소",
+  "open_pull_request": "GitHub에서 풀 리퀘스트 열기",
+  "open_commit_on_github": "GitHub에서 커밋 열기",
+  "open_in_zed": "Zed에서 워크트리 열기",
+  "open_file_in_zed": "Zed에서 파일 열기",
+  "open_line_in_zed": "Zed에서 {line}행 열기",
+  "compare_with_selected": "선택 항목과 비교"
 }

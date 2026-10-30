@@ -288,6 +288,9 @@ pub struct Preferences {
     pub repository: Option<PathBuf>,
     #[serde(default)]
     pub recent_repositories: Vec<RecentRepository>,
+    /// Worktrees opened lately across repositories, newest first.
+    #[serde(default)]
+    pub recent_worktrees: Vec<PathBuf>,
     #[serde(default)]
     pub repository_sidebar_ratio: Option<f32>,
     #[serde(default)]
@@ -312,6 +315,7 @@ impl Default for Preferences {
             language: Language::default(),
             repository: None,
             recent_repositories: Vec::new(),
+            recent_worktrees: Vec::new(),
             repository_sidebar_ratio: None,
             tree_file_list: false,
             show_file_stats: false,
@@ -320,6 +324,8 @@ impl Default for Preferences {
         }
     }
 }
+
+const RECENT_WORKTREES: usize = 8;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RecentRepository {
@@ -376,6 +382,12 @@ impl Preferences {
         {
             entry.viewed_branch = reference;
         }
+    }
+
+    pub fn remember_worktree(&mut self, path: PathBuf) {
+        self.recent_worktrees.retain(|recent| *recent != path);
+        self.recent_worktrees.insert(0, path);
+        self.recent_worktrees.truncate(RECENT_WORKTREES);
     }
 
     pub fn worktree(&self, path: &std::path::Path) -> Option<&std::path::Path> {

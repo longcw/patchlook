@@ -110,5 +110,15 @@
   "fork_point": "Bifurcado de {branch}",
   "all_branches": "Todas las ramas",
   "open_in_compare": "Abrir en Comparar",
-  "search_branches": "Filtrar ramas"
+  "search_branches": "Filtrar ramas",
+  "worktrees": "Árboles de trabajo",
+  "search_worktrees": "Filtrar árboles de trabajo",
+  "recent_worktrees": "Recientes",
+  "repository_worktrees": "Este repositorio",
+  "open_pull_request": "Abrir pull request en GitHub",
+  "open_commit_on_github": "Abrir commit en GitHub",
+  "open_in_zed": "Abrir árbol de trabajo en Zed",
+  "open_file_in_zed": "Abrir archivo en Zed",
+  "open_line_in_zed": "Abrir línea {line} en Zed",
+  "compare_with_selected": "Comparar con la selección"
 }
