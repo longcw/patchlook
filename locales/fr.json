@@ -120,5 +120,10 @@
   "open_in_zed": "Ouvrir l'arbre de travail dans Zed",
   "open_file_in_zed": "Ouvrir le fichier dans Zed",
   "open_line_in_zed": "Ouvrir la ligne {line} dans Zed",
-  "compare_with_selected": "Comparer avec la sélection"
+  "compare_with_selected": "Comparer avec la sélection",
+  "any_remote": "N'importe quel distant",
+  "finding_pull_request": "Recherche de la pull request de {commit}…",
+  "finding_commit": "Vérification de {commit} sur GitHub…",
+  "opening_in_zed": "Ouverture dans Zed…",
+  "cancel": "Annuler"
 }

@@ -33,7 +33,7 @@ use patchlook::{
     },
     github,
     graph::{Graph, GraphRow},
-    preferences::{Appearance, Language, Layout, Preferences},
+    preferences::{Appearance, Language, Layout, Preferences, StartView},
     zed,
 };
 use std::{
@@ -334,6 +334,9 @@ pub struct Patchlook {
     branch_tab: BranchTab,
     /// The diff line under the pointer, which the diff's context menu acts on.
     hovered_line: Option<DiffLinePosition>,
+    github_remotes: Vec<github::GitHubRepo>,
+    /// A running network lookup and what it is doing; dropping it cancels the lookup.
+    link_task: Option<(String, Task<()>)>,
     view: View,
     history: HistoryState,
     repository_preview: bool,
@@ -396,6 +399,13 @@ impl Patchlook {
             }),
         ];
         let initial = initial.or_else(|| preferences.repository.clone());
+        // The graph in Repos once there are repositories, else the welcome page.
+        let view = match preferences.view {
+            Some(StartView::Compare) => View::History,
+            Some(StartView::Repositories) => View::Repositories,
+            None if preferences.recent_repositories.is_empty() => View::History,
+            None => View::Repositories,
+        };
         let mut app = Self {
             history: HistoryState::new(preferences.layout, cx),
             preferences,
@@ -412,7 +422,9 @@ impl Patchlook {
             toggled_branch_folders: Default::default(),
             branch_tab: BranchTab::Branches,
             hovered_line: None,
-            view: View::History,
+            github_remotes: Vec::new(),
+            link_task: None,
+            view,
             repository_preview: false,
 
             history_search,
@@ -612,18 +624,20 @@ impl Patchlook {
                         .and_then(|entry| entry.viewed_branch.clone());
                     let branches = repo.branches()?;
                     let worktrees = repo.worktrees()?;
+                    // A repository without remotes still opens.
+                    let remotes = github::remotes(&repo).unwrap_or_default();
                     let branch = repo.branch_name()?;
                     let reference = reference.as_deref();
                     let page =
                         repo.history_filtered(0, Some(history_revision(reference)), &query)?;
                     let start = first_history_row(&repo, &page, shows_head(reference), preview)?;
-                    anyhow::Ok((repo, branch, (branches, worktrees), page, start))
+                    anyhow::Ok((repo, branch, (branches, worktrees, remotes), page, start))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok((repo, branch, (branches, worktrees), page, start)) => {
+                    Ok((repo, branch, (branches, worktrees, remotes), page, start)) => {
                         let query = std::mem::take(&mut this.history.query);
                         this.history = HistoryState::new(this.preferences.layout, cx);
                         this.history.query = query;
@@ -644,6 +658,7 @@ impl Patchlook {
                         this.branch = branch;
                         this.branches = branches;
                         this.worktrees = worktrees;
+                        this.github_remotes = remotes;
                         this.save_preferences();
                         this.history.revision = page.revision;
                         this.history.commits = page.commits;
@@ -711,6 +726,11 @@ impl Patchlook {
             return;
         }
         self.view = view;
+        self.preferences.view = Some(match view {
+            View::Repositories => StartView::Repositories,
+            View::History => StartView::Compare,
+        });
+        self.save_preferences();
         if view == View::Repositories {
             self.repository_preview = false;
         }
@@ -1048,18 +1068,22 @@ impl Patchlook {
             .filter(|index| *index < self.active_files().changes.len())
     }
 
-    /// Runs a link lookup off the main thread and opens the web page it finds.
+    /// Runs a link lookup off the main thread, showing `status` until it opens
+    /// the page it finds; a newer lookup or Cancel replaces it.
     fn open_link(
         &mut self,
+        status: String,
         job: impl FnOnce(Repository) -> anyhow::Result<Option<String>> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
         let Some(repo) = self.repository.clone() else {
             return;
         };
-        cx.spawn(async move |this, cx| {
+        self.error = None;
+        let task = cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { job(repo) }).await;
             let _ = this.update(cx, |this, cx| {
+                this.link_task = None;
                 match result {
                     Ok(Some(url)) => cx.open_url(&url),
                     Ok(None) => {}
@@ -1067,8 +1091,40 @@ impl Patchlook {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        self.link_task = Some((status, task));
+        cx.notify();
+    }
+
+    fn open_github(
+        &mut self,
+        pull_request: bool,
+        commit: String,
+        remote: Option<github::GitHubRepo>,
+        cx: &mut Context<Self>,
+    ) {
+        let remotes = match remote {
+            Some(remote) => vec![remote],
+            None => self.github_remotes.clone(),
+        };
+        let status = if pull_request {
+            "finding_pull_request"
+        } else {
+            "finding_commit"
+        };
+        let status = tr(status).replace("{commit}", &commit[..7.min(commit.len())]);
+        self.open_link(
+            status,
+            move |repo| {
+                let url = if pull_request {
+                    github::pull_request_url(&repo, &commit, &remotes)?
+                } else {
+                    github::published_commit_url(&repo, &commit, &remotes)?
+                };
+                Ok(Some(url))
+            },
+            cx,
+        );
     }
 
     /// Opens Zed in the worktree that has `commit` checked out, or the opened one.
@@ -1080,6 +1136,7 @@ impl Patchlook {
     ) {
         let worktrees = self.worktrees.clone();
         self.open_link(
+            tr("opening_in_zed").to_owned(),
             move |repo| {
                 let worktree = match &commit {
                     Some(commit) => repo.worktree_for(commit, &worktrees)?,
@@ -1109,68 +1166,6 @@ impl Patchlook {
             change.path.clone(),
             position.map_or(1, DiffLinePosition::line),
         ))
-    }
-
-    fn commit_menu(
-        &self,
-        row: Row,
-        menu: component::menu::PopupMenu,
-        cx: &mut Context<Self>,
-    ) -> component::menu::PopupMenu {
-        let app = cx.entity().downgrade();
-        let action = move |handler: fn(&mut Self, Row, &mut Context<Self>)| {
-            let app = app.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                let _ = app.update(cx, |this, cx| handler(this, row, cx));
-            }
-        };
-        let id = match row {
-            Row::Commit(index) => self.history.commits.get(index).map(|c| c.id.clone()),
-            Row::Working => None,
-        };
-        let commit_items = |menu: component::menu::PopupMenu| {
-            menu.item(PopupMenuItem::new(tr("open_pull_request")).on_click(action(
-                |this, row, cx| {
-                    if let Some(id) = this.row_commit_id(row) {
-                        this.open_link(
-                            move |repo| github::pull_request_url(&repo, &id).map(Some),
-                            cx,
-                        );
-                    }
-                },
-            )))
-            .item(
-                PopupMenuItem::new(tr("open_commit_on_github")).on_click(action(
-                    |this, row, cx| {
-                        if let Some(id) = this.row_commit_id(row) {
-                            this.open_link(
-                                move |repo| github::published_commit_url(&repo, &id).map(Some),
-                                cx,
-                            );
-                        }
-                    },
-                )),
-            )
-            .item(
-                PopupMenuItem::new(tr("copy_commit_id")).on_click(action(|this, row, cx| {
-                    if let Some(id) = this.row_commit_id(row) {
-                        cx.write_to_clipboard(ClipboardItem::new_string(id));
-                    }
-                })),
-            )
-            .separator()
-        };
-        menu.when(id.is_some(), commit_items)
-            .item(
-                PopupMenuItem::new(tr("open_in_zed")).on_click(action(|this, row, cx| {
-                    this.open_in_zed(this.row_commit_id(row), None, cx)
-                })),
-            )
-            .item(
-                PopupMenuItem::new(tr("compare_with_selected"))
-                    .disabled(self.history.anchor.is_none_or(|anchor| anchor == row))
-                    .on_click(action(|this, row, cx| this.select_row(row, true, cx))),
-            )
     }
 
     fn row_commit_id(&self, row: Row) -> Option<String> {
@@ -1458,6 +1453,89 @@ fn graph_canvas(
     .flex_none()
     .w(px(GRAPH_LANE_WIDTH * lanes as f32 + 8.))
     .h_full()
+}
+
+type MenuAction = Box<dyn Fn(&mut Patchlook, &mut Context<Patchlook>)>;
+
+/// The right-click menu of a history row. GitHub actions offer each remote
+/// when there are several, and otherwise try them in priority order.
+fn commit_menu(
+    app: WeakEntity<Patchlook>,
+    row: Row,
+    menu: component::menu::PopupMenu,
+    window: &mut Window,
+    cx: &mut Context<component::menu::PopupMenu>,
+) -> component::menu::PopupMenu {
+    let Some(entity) = app.upgrade() else {
+        return menu;
+    };
+    let this = entity.read(cx);
+    let commit = this.row_commit_id(row);
+    let remotes = this.github_remotes.clone();
+    let commit_for_links = commit.clone();
+    let can_compare = this.history.anchor.is_some_and(|anchor| anchor != row);
+    let act = move |handler: MenuAction| {
+        let app = app.clone();
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            let _ = app.update(cx, |this, cx| handler(this, cx));
+        }
+    };
+    let github_act = act.clone();
+    let github = move |pull_request: bool, remote: Option<github::GitHubRepo>| {
+        let commit = commit_for_links.clone().unwrap_or_default();
+        github_act(Box::new(move |this, cx| {
+            this.open_github(pull_request, commit.clone(), remote.clone(), cx)
+        }))
+    };
+    let mut menu = menu;
+    if let Some(id) = commit.clone() {
+        for (pull_request, key) in [
+            (true, "open_pull_request"),
+            (false, "open_commit_on_github"),
+        ] {
+            menu = if remotes.len() > 1 {
+                let remotes = remotes.clone();
+                let github = github.clone();
+                menu.submenu(tr(key), window, cx, move |submenu, _, _| {
+                    remotes.iter().fold(
+                        submenu.item(
+                            PopupMenuItem::new(tr("any_remote"))
+                                .on_click(github(pull_request, None)),
+                        ),
+                        |submenu, remote| {
+                            let label =
+                                format!("{} · {}/{}", remote.remote, remote.owner, remote.name);
+                            submenu.item(
+                                PopupMenuItem::new(label)
+                                    .on_click(github(pull_request, Some(remote.clone()))),
+                            )
+                        },
+                    )
+                })
+            } else {
+                menu.item(PopupMenuItem::new(tr(key)).on_click(github(pull_request, None)))
+            };
+        }
+        menu = menu
+            .item(
+                PopupMenuItem::new(tr("copy_commit_id")).on_click(act(Box::new(move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))
+                }))),
+            )
+            .separator();
+    }
+    menu.item(
+        PopupMenuItem::new(tr("open_in_zed")).on_click(act(Box::new(move |this, cx| {
+            this.open_in_zed(this.row_commit_id(row), None, cx)
+        }))),
+    )
+    .item(
+        PopupMenuItem::new(tr("compare_with_selected"))
+            .disabled(!can_compare)
+            .on_click(act(Box::new(move |this, cx| {
+                this.select_row(row, true, cx)
+            }))),
+    )
 }
 
 /// The revision a viewed-branch choice shows.
@@ -3088,6 +3166,13 @@ impl Patchlook {
                                 range
                                     .map(|index| {
                                         if index == this.history.row_count() {
+                                            // Reaching the end of the list fetches the next page.
+                                            if !this.history.loading {
+                                                cx.spawn(async move |this, cx| {
+                                                    let _ = this.update(cx, Self::load_more);
+                                                })
+                                                .detach();
+                                            }
                                             this.load_more_row(cx).into_any_element()
                                         } else {
                                             this.history_row(index, cx)
@@ -3293,10 +3378,7 @@ impl Patchlook {
             .id(("history-row", index))
             .context_menu({
                 let app = cx.entity().downgrade();
-                move |menu, _, cx| match app.upgrade() {
-                    Some(app) => app.update(cx, |this, cx| this.commit_menu(row, menu, cx)),
-                    None => menu,
-                }
+                move |menu, window, cx| commit_menu(app.clone(), row, menu, window, cx)
             })
             .into_any_element()
     }
@@ -3673,6 +3755,40 @@ impl Render for Patchlook {
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::show_about))
             .child(self.toolbar(cx))
+            .when_some(self.link_task.as_ref(), |view, (status, _)| {
+                view.child(
+                    h_flex()
+                        .id("link-status")
+                        .flex_none()
+                        .gap_3()
+                        .px_4()
+                        .py_1()
+                        .bg(cx.theme().secondary)
+                        .child(
+                            Icon::new(IconName::LoaderCircle)
+                                .xsmall()
+                                .text_color(cx.theme().muted_foreground)
+                                .with_animation(
+                                    "link-status-spinner",
+                                    Animation::new(Duration::from_secs(1)).repeat(),
+                                    |icon, delta| {
+                                        icon.transform(Transformation::rotate(percentage(delta)))
+                                    },
+                                ),
+                        )
+                        .child(div().flex_1().text_sm().child(status.clone()))
+                        .child(
+                            Button::new("cancel-link")
+                                .label(tr("cancel"))
+                                .xsmall()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.link_task = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .when_some(self.visible_error().cloned(), |view, error| {
                 view.child(
                     h_flex()
@@ -3802,6 +3918,8 @@ mod tests {
             toggled_branch_folders: Default::default(),
             branch_tab: BranchTab::Branches,
             hovered_line: None,
+            github_remotes: Vec::new(),
+            link_task: None,
             view: View::History,
             repository_preview: false,
 
@@ -4613,6 +4731,84 @@ mod tests {
             assert_eq!(app.history.commits.len(), 1);
             assert_eq!(app.viewed_branch_name(), "main");
         });
+    }
+
+    #[gpui_kit::test]
+    fn scrolling_to_the_end_loads_earlier_commits(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        use patchlook::git::HISTORY_PAGE_SIZE;
+        for index in 0..=HISTORY_PAGE_SIZE {
+            git(
+                root,
+                &["commit", "-qm", &format!("Commit {index}"), "--allow-empty"],
+            );
+        }
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        app.update(cx, |app, cx| app.load(root.canonicalize().unwrap(), cx));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.history.commits.len(), HISTORY_PAGE_SIZE);
+            assert!(app.history.has_more);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            app.update(cx, |app, _| {
+                app.history
+                    .scroll
+                    .scroll_to_item(HISTORY_PAGE_SIZE, ScrollStrategy::Top)
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.history.commits.len(), HISTORY_PAGE_SIZE + 1);
+            assert!(!app.history.has_more);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn link_lookups_show_status_until_done_or_cancelled(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        git(directory.path(), &["init", "-b", "main"]);
+        let repo = Repository::open(directory.path()).unwrap();
+        let (_, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.repository = Some(repo);
+                    app
+                })
+            })
+            .unwrap()
+        });
+        for cancel in [false, true] {
+            app.update(cx, |app, cx| {
+                app.open_link("Looking".into(), |_| anyhow::bail!("not found"), cx);
+                assert_eq!(
+                    app.link_task.as_ref().map(|(s, _)| s.as_str()),
+                    Some("Looking")
+                );
+                if cancel {
+                    app.link_task = None;
+                }
+            });
+            cx.run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert!(app.link_task.is_none());
+                // A cancelled lookup's result never arrives.
+                assert_eq!(app.error.is_some(), !cancel);
+            });
+            app.update(cx, |app, _| app.error = None);
+        }
     }
 
     #[gpui_kit::test]

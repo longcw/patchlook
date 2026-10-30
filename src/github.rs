@@ -4,8 +4,16 @@ use anyhow::{Context, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitHubRepo {
+    /// The Git remote that points at it, such as `origin`.
+    pub remote: String,
     pub owner: String,
     pub name: String,
+}
+
+impl GitHubRepo {
+    fn same_repository(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.name == other.name
+    }
 }
 
 /// Reads `git@github.com:o/r.git`, `https://github.com/o/r` and `ssh://git@github.com/o/r`.
@@ -17,6 +25,7 @@ pub fn parse_remote_url(url: &str) -> Option<GitHubRepo> {
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
     let (owner, name) = rest.trim_end_matches('/').split_once('/')?;
     (!owner.is_empty() && !name.is_empty() && !name.contains('/')).then(|| GitHubRepo {
+        remote: String::new(),
         owner: owner.to_owned(),
         name: name.to_owned(),
     })
@@ -27,16 +36,21 @@ pub fn remotes(repo: &Repository) -> Result<Vec<GitHubRepo>> {
     let mut remotes: Vec<_> = repo
         .remote_urls()?
         .into_iter()
-        .filter_map(|(name, url)| Some((name, parse_remote_url(&url)?)))
+        .filter_map(|(name, url)| {
+            Some(GitHubRepo {
+                remote: name,
+                ..parse_remote_url(&url)?
+            })
+        })
         .collect();
-    remotes.sort_by_key(|(name, _)| match name.as_str() {
+    remotes.sort_by_key(|remote| match remote.remote.as_str() {
         "upstream" => 0,
         "origin" => 1,
         _ => 2,
     });
     let mut unique: Vec<GitHubRepo> = Vec::new();
-    for (_, remote) in remotes {
-        if !unique.contains(&remote) {
+    for remote in remotes {
+        if !unique.iter().any(|known| known.same_repository(&remote)) {
             unique.push(remote);
         }
     }
@@ -82,10 +96,13 @@ fn gh(repo: &Repository, args: &[&str]) -> Result<Option<String>> {
 }
 
 /// The commit page, once GitHub is known to have the commit.
-pub fn published_commit_url(repo: &Repository, sha: &str) -> Result<String> {
-    let remotes = remotes(repo)?;
+pub fn published_commit_url(
+    repo: &Repository,
+    sha: &str,
+    remotes: &[GitHubRepo],
+) -> Result<String> {
     anyhow::ensure!(!remotes.is_empty(), "This repository has no GitHub remote");
-    for remote in &remotes {
+    for remote in remotes {
         let path = format!("repos/{}/{}/commits/{sha}", remote.owner, remote.name);
         if gh(repo, &["api", "--jq", ".sha", &path])?.is_some() {
             return Ok(commit_url(remote, sha));
@@ -131,16 +148,15 @@ fn first_answer(repo: &Repository, queries: &[Vec<String>]) -> Result<Option<Str
 /// The pull request that brought a commit in or contains it: GitHub's link for
 /// a pushed commit or a search of pull request commits, then the pull request
 /// of a branch holding the commit, which also finds unpushed commits.
-pub fn pull_request_url(repo: &Repository, sha: &str) -> Result<String> {
-    let remotes = remotes(repo)?;
+pub fn pull_request_url(repo: &Repository, sha: &str, remotes: &[GitHubRepo]) -> Result<String> {
     anyhow::ensure!(!remotes.is_empty(), "This repository has no GitHub remote");
     let owned = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
     let mut queries = Vec::new();
-    for remote in &remotes {
+    for remote in remotes {
         let path = format!("repos/{}/{}/commits/{sha}/pulls", remote.owner, remote.name);
         queries.push(owned(&["api", "--jq", ".[0].html_url // empty", &path]));
     }
-    for remote in &remotes {
+    for remote in remotes {
         let query = format!("q={sha} is:pr repo:{}/{}", remote.owner, remote.name);
         let jq = ".items[0].html_url // empty";
         queries.push(owned(&[
@@ -175,7 +191,7 @@ pub fn pull_request_url(repo: &Repository, sha: &str) -> Result<String> {
     }
     let mut queries = Vec::new();
     for head in &heads {
-        for remote in &remotes {
+        for remote in remotes {
             let name = format!("{}/{}", remote.owner, remote.name);
             queries.push(owned(&[
                 "pr",
@@ -209,6 +225,7 @@ mod tests {
     #[test]
     fn remote_urls_name_their_repository() {
         let expected = Some(GitHubRepo {
+            remote: String::new(),
             owner: "longcw".into(),
             name: "patchlook".into(),
         });

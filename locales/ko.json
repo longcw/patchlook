@@ -120,5 +120,10 @@
   "open_in_zed": "Zed에서 워크트리 열기",
   "open_file_in_zed": "Zed에서 파일 열기",
   "open_line_in_zed": "Zed에서 {line}행 열기",
-  "compare_with_selected": "선택 항목과 비교"
+  "compare_with_selected": "선택 항목과 비교",
+  "any_remote": "모든 원격",
+  "finding_pull_request": "{commit}의 풀 리퀘스트를 찾는 중…",
+  "finding_commit": "GitHub에서 {commit} 확인 중…",
+  "opening_in_zed": "Zed에서 여는 중…",
+  "cancel": "취소"
 }

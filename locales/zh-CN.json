@@ -120,5 +120,10 @@
   "open_in_zed": "在 Zed 中打开工作树",
   "open_file_in_zed": "在 Zed 中打开文件",
   "open_line_in_zed": "在 Zed 中打开第 {line} 行",
-  "compare_with_selected": "与所选项比较"
+  "compare_with_selected": "与所选项比较",
+  "any_remote": "任意远程",
+  "finding_pull_request": "正在查找 {commit} 的拉取请求…",
+  "finding_commit": "正在 GitHub 上查找 {commit}…",
+  "opening_in_zed": "正在 Zed 中打开…",
+  "cancel": "取消"
 }

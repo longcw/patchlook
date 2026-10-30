@@ -179,6 +179,14 @@ impl Appearance {
     }
 }
 
+/// The tab the window opens on, which is the last one used.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StartView {
+    Repositories,
+    Compare,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Layout {
@@ -301,6 +309,8 @@ pub struct Preferences {
     pub soft_wrap: bool,
     #[serde(default = "default_enabled")]
     pub show_commit_message: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<StartView>,
 }
 
 fn default_enabled() -> bool {
@@ -321,6 +331,7 @@ impl Default for Preferences {
             show_file_stats: false,
             soft_wrap: default_enabled(),
             show_commit_message: default_enabled(),
+            view: None,
         }
     }
 }

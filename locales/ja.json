@@ -120,5 +120,10 @@
   "open_in_zed": "Zed でワークツリーを開く",
   "open_file_in_zed": "Zed でファイルを開く",
   "open_line_in_zed": "Zed で {line} 行目を開く",
-  "compare_with_selected": "選択項目と比較"
+  "compare_with_selected": "選択項目と比較",
+  "any_remote": "任意のリモート",
+  "finding_pull_request": "{commit} のプルリクエストを検索中…",
+  "finding_commit": "GitHub で {commit} を確認中…",
+  "opening_in_zed": "Zed で開いています…",
+  "cancel": "キャンセル"
 }

@@ -120,5 +120,10 @@
   "open_in_zed": "Open worktree in Zed",
   "open_file_in_zed": "Open file in Zed",
   "open_line_in_zed": "Open line {line} in Zed",
-  "compare_with_selected": "Compare with selected"
+  "compare_with_selected": "Compare with selected",
+  "any_remote": "Any remote",
+  "finding_pull_request": "Finding the pull request for {commit}…",
+  "finding_commit": "Checking GitHub for {commit}…",
+  "opening_in_zed": "Opening in Zed…",
+  "cancel": "Cancel"
 }
