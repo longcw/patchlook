@@ -150,6 +150,8 @@
   "close": "关闭",
   "edit_file_here": "在第 {line} 行编辑文件",
   "settings": "设置",
+  "expansion_lines": "每次展开的上下文行数",
+  "expansion_lines_help": "单击折叠的代码时，在变更旁显示的未变更行数。按住 Option 单击可展开全部。",
   "zed": "Zed",
   "zed_command": "Zed 命令",
   "zed_command_automatic": "自动（Zed.app 或 zed 命令）",

@@ -150,6 +150,8 @@
   "close": "Cerrar",
   "edit_file_here": "Editar archivo en la línea {line}",
   "settings": "Ajustes",
+  "expansion_lines": "Líneas de contexto por clic",
+  "expansion_lines_help": "Líneas sin cambios que un clic en el código plegado muestra junto a los cambios. Opción-clic lo expande todo.",
   "zed": "Zed",
   "zed_command": "Comando de Zed",
   "zed_command_automatic": "Automático (Zed.app o el comando zed)",

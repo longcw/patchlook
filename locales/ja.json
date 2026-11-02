@@ -150,6 +150,8 @@
   "close": "閉じる",
   "edit_file_here": "{line} 行目でファイルを編集",
   "settings": "設定",
+  "expansion_lines": "クリックごとに表示する行数",
+  "expansion_lines_help": "折りたたまれたコードをクリックしたときに変更の隣に表示する変更のない行数。Option-クリックですべて展開します。",
   "zed": "Zed",
   "zed_command": "Zed コマンド",
   "zed_command_automatic": "自動（Zed.app または zed コマンド）",

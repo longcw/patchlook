@@ -150,6 +150,8 @@
   "close": "Close",
   "edit_file_here": "Edit file at line {line}",
   "settings": "Settings",
+  "expansion_lines": "Context lines per click",
+  "expansion_lines_help": "Unchanged lines one click on folded code reveals next to the changes. Option-click reveals the whole fold.",
   "zed": "Zed",
   "zed_command": "Zed command",
   "zed_command_automatic": "Automatic (Zed.app or the zed command)",

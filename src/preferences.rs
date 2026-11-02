@@ -26,6 +26,7 @@ mod tests {
             assert!(!preferences.show_file_stats);
             assert!(preferences.soft_wrap);
             assert!(preferences.show_commit_message);
+            assert_eq!(preferences.expansion_lines, DEFAULT_EXPANSION_LINES);
         }
 
         let directory = tempfile::tempdir().unwrap();
@@ -35,6 +36,7 @@ mod tests {
             show_file_stats: true,
             soft_wrap: false,
             show_commit_message: false,
+            expansion_lines: 50,
             language: Language::German,
             ..Preferences::default()
         };
@@ -45,6 +47,7 @@ mod tests {
         assert!(restored.show_file_stats);
         assert!(!restored.soft_wrap);
         assert!(!restored.show_commit_message);
+        assert_eq!(restored.expansion_lines, 50);
         assert_eq!(restored.language, Language::German);
         assert_eq!(restored.repository, preferences.repository);
     }
@@ -309,6 +312,9 @@ pub struct Preferences {
     pub soft_wrap: bool,
     #[serde(default = "default_enabled")]
     pub show_commit_message: bool,
+    /// How many unchanged lines one click on folded context reveals.
+    #[serde(default = "default_expansion_lines")]
+    pub expansion_lines: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<StartView>,
     /// Zed's command-line tool, when it is not found automatically.
@@ -318,6 +324,12 @@ pub struct Preferences {
 
 fn default_enabled() -> bool {
     true
+}
+
+pub const DEFAULT_EXPANSION_LINES: usize = 30;
+
+fn default_expansion_lines() -> usize {
+    DEFAULT_EXPANSION_LINES
 }
 
 impl Default for Preferences {
@@ -334,6 +346,7 @@ impl Default for Preferences {
             show_file_stats: false,
             soft_wrap: default_enabled(),
             show_commit_message: default_enabled(),
+            expansion_lines: DEFAULT_EXPANSION_LINES,
             view: None,
             zed_command: None,
         }

@@ -150,6 +150,8 @@
   "close": "닫기",
   "edit_file_here": "{line}행에서 파일 편집",
   "settings": "설정",
+  "expansion_lines": "클릭당 표시할 줄 수",
+  "expansion_lines_help": "접힌 코드를 클릭할 때 변경 사항 옆에 표시할 변경되지 않은 줄 수입니다. Option-클릭하면 모두 펼칩니다.",
   "zed": "Zed",
   "zed_command": "Zed 명령",
   "zed_command_automatic": "자동 (Zed.app 또는 zed 명령)",

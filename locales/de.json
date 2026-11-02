@@ -150,6 +150,8 @@
   "close": "Schließen",
   "edit_file_here": "Datei in Zeile {line} bearbeiten",
   "settings": "Einstellungen",
+  "expansion_lines": "Kontextzeilen pro Klick",
+  "expansion_lines_help": "Unveränderte Zeilen, die ein Klick auf eingeklappten Code neben den Änderungen zeigt. Wahltaste-Klick klappt alles aus.",
   "zed": "Zed",
   "zed_command": "Zed-Befehl",
   "zed_command_automatic": "Automatisch (Zed.app oder der Befehl zed)",

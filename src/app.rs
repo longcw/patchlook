@@ -9,7 +9,7 @@ use gpui_kit::base::{SelectableText, TestSupportExt};
 use gpui_kit::{
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, Theme, ThemeMode, TitleBar,
-        button::{Button, ButtonCustomVariant, ButtonVariants},
+        button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants},
         diff::{
             Diff, DiffAnnotation, DiffChangeIndicator, DiffFile, DiffHunkSeparator,
             DiffLinePosition, DiffLineRange, DiffMode, DiffOverviewKind, DiffSide, DiffState,
@@ -55,6 +55,8 @@ const LINK_RESULT_DURATION: Duration = Duration::from_secs(2);
 const SAVE_RESULT_DURATION: Duration = Duration::from_secs(5);
 const HISTORY_SEARCH_THRESHOLD: usize = 20;
 const MAX_GRAPH_LANES: usize = 10;
+/// The context sizes the settings offer for one click on folded code.
+const EXPANSION_LINE_CHOICES: [usize; 5] = [10, 20, 30, 50, 100];
 /// The viewed-branch choice for the checked-out branch; no choice means all branches.
 const HEAD_BRANCH: &str = "HEAD";
 const GRAPH_LANE_WIDTH: f32 = 12.;
@@ -148,8 +150,12 @@ struct ChangeState {
 }
 
 impl ChangeState {
-    fn new(layout: Layout, cx: &mut Context<Patchlook>) -> Self {
-        let diff = cx.new(|cx| DiffState::new([], cx).with_mode(diff_mode(layout)));
+    fn new(layout: Layout, expansion_lines: usize, cx: &mut Context<Patchlook>) -> Self {
+        let diff = cx.new(|cx| {
+            DiffState::new([], cx)
+                .with_mode(diff_mode(layout))
+                .with_expansion_lines(expansion_lines)
+        });
         let subscription = cx.observe(&diff, |_, _, cx| cx.notify());
         Self {
             loaded: false,
@@ -310,9 +316,9 @@ impl HistoryState {
         Some(self.comparison_for(self.selected?, self.compare))
     }
 
-    fn new(layout: Layout, cx: &mut Context<Patchlook>) -> Self {
+    fn new(layout: Layout, expansion_lines: usize, cx: &mut Context<Patchlook>) -> Self {
         Self {
-            files: ChangeState::new(layout, cx),
+            files: ChangeState::new(layout, expansion_lines, cx),
             commits: Vec::new(),
             working_changes: false,
             selected: None,
@@ -457,7 +463,7 @@ impl Patchlook {
             None => View::Repositories,
         };
         let mut app = Self {
-            history: HistoryState::new(preferences.layout, cx),
+            history: HistoryState::new(preferences.layout, preferences.expansion_lines, cx),
             preferences,
             about: cx.new(crate::about::AboutPanel::new),
             external_files: Vec::new(),
@@ -706,7 +712,11 @@ impl Patchlook {
                 match result {
                     Ok((repo, branch, (branches, worktrees, remotes, head), page, start)) => {
                         let query = std::mem::take(&mut this.history.query);
-                        this.history = HistoryState::new(this.preferences.layout, cx);
+                        this.history = HistoryState::new(
+                            this.preferences.layout,
+                            this.preferences.expansion_lines,
+                            cx,
+                        );
                         this.history.query = query;
                         this.repository_preview = false;
                         this.reset_copy_feedback();
@@ -783,7 +793,11 @@ impl Patchlook {
         self.branch.clear();
         self.branches.clear();
         self.branch_scroll = UniformListScrollHandle::new();
-        self.history = HistoryState::new(self.preferences.layout, cx);
+        self.history = HistoryState::new(
+            self.preferences.layout,
+            self.preferences.expansion_lines,
+            cx,
+        );
         self.repository_preview = false;
         self.reset_copy_feedback();
         self.error = None;
@@ -991,7 +1005,11 @@ impl Patchlook {
     }
 
     fn apply_changes(&mut self, prepared: PreparedChanges, cx: &mut Context<Self>) {
-        let mut files = ChangeState::new(self.preferences.layout, cx);
+        let mut files = ChangeState::new(
+            self.preferences.layout,
+            self.preferences.expansion_lines,
+            cx,
+        );
         files.loaded = true;
         files.total_stats = Some(prepared.stats.iter().flatten().copied().sum());
         files.change_tree = self.repository.as_ref().map(|repo| {
@@ -1305,7 +1323,7 @@ impl Patchlook {
         cx.notify();
     }
 
-    /// What the optional integrations need, and whether this machine has it.
+    /// The diff options and what the optional integrations need.
     fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let zed_status = match zed::find(self.preferences.zed_command.as_deref()) {
             Some(zed::Launcher::App) => tr("zed_found_app").to_owned(),
@@ -1362,6 +1380,32 @@ impl Patchlook {
                     window.focus(&this.focus, cx);
                     cx.notify();
                 }),
+            )
+            .child(
+                section("expansion_lines", String::new(), "expansion_lines_help", cx).child(
+                    ButtonGroup::new("expansion-lines")
+                        .outline()
+                        .xsmall()
+                        .children(EXPANSION_LINE_CHOICES.map(|lines| {
+                            Button::new(("expansion-lines", lines))
+                                .label(lines.to_string())
+                                .selected(lines == self.preferences.expansion_lines)
+                        }))
+                        .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
+                            let Some(&lines) = clicked
+                                .first()
+                                .and_then(|&ix| EXPANSION_LINE_CHOICES.get(ix))
+                            else {
+                                return;
+                            };
+                            this.preferences.expansion_lines = lines;
+                            this.save_preferences();
+                            this.active_files()
+                                .diff
+                                .update(cx, |diff, cx| diff.set_expansion_lines(lines, cx));
+                            cx.notify();
+                        })),
+                ),
             )
             .child(
                 section("zed", zed_status.clone(), "zed_help", cx)
@@ -4985,7 +5029,7 @@ mod tests {
 
     fn test_app(window: &mut Window, cx: &mut Context<Patchlook>) -> Patchlook {
         Patchlook {
-            history: HistoryState::new(Layout::Split, cx),
+            history: HistoryState::new(Layout::Split, Preferences::default().expansion_lines, cx),
             preferences: Preferences::default(),
             about: cx.new(crate::about::AboutPanel::new),
             external_files: Vec::new(),
