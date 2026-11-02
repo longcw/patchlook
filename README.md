@@ -72,6 +72,8 @@ Text diffs require UTF-8. Supported images are shown as previews; other binary f
 | Refresh | `⌘ R` / `F5` | `Ctrl R` / `F5` |
 | Copy selection | `⌘ C` | `Ctrl C` |
 | Select all in the current diff pane | `⌘ A` | `Ctrl A` |
+| Next / previous changed block in the diff | `↓` / `↑` | `↓` / `↑` |
+| Scroll the diff by one line | `⌘ ↓` / `⌘ ↑` | `Ctrl ↓` / `Ctrl ↑` |
 | Navigate the file tree | Arrow keys | Arrow keys |
 | Quit | `⌘ Q` | `Ctrl Q` |
 

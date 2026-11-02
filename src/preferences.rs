@@ -26,6 +26,7 @@ mod tests {
             assert!(!preferences.show_file_stats);
             assert!(preferences.soft_wrap);
             assert!(preferences.show_commit_message);
+            assert!(!preferences.expand_context);
             assert_eq!(preferences.expansion_lines, DEFAULT_EXPANSION_LINES);
         }
 
@@ -36,6 +37,7 @@ mod tests {
             show_file_stats: true,
             soft_wrap: false,
             show_commit_message: false,
+            expand_context: true,
             expansion_lines: 50,
             language: Language::German,
             ..Preferences::default()
@@ -47,6 +49,7 @@ mod tests {
         assert!(restored.show_file_stats);
         assert!(!restored.soft_wrap);
         assert!(!restored.show_commit_message);
+        assert!(restored.expand_context);
         assert_eq!(restored.expansion_lines, 50);
         assert_eq!(restored.language, Language::German);
         assert_eq!(restored.repository, preferences.repository);
@@ -312,6 +315,9 @@ pub struct Preferences {
     pub soft_wrap: bool,
     #[serde(default = "default_enabled")]
     pub show_commit_message: bool,
+    /// Whether diffs show unchanged lines instead of folding them.
+    #[serde(default)]
+    pub expand_context: bool,
     /// How many unchanged lines one click on folded context reveals.
     #[serde(default = "default_expansion_lines")]
     pub expansion_lines: usize,
@@ -346,6 +352,7 @@ impl Default for Preferences {
             show_file_stats: false,
             soft_wrap: default_enabled(),
             show_commit_message: default_enabled(),
+            expand_context: false,
             expansion_lines: DEFAULT_EXPANSION_LINES,
             view: None,
             zed_command: None,

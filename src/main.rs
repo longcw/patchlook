@@ -5,7 +5,10 @@ mod change_tree;
 mod file_icons;
 mod image_diff;
 mod strings;
-use app::{About, OpenRepository, Patchlook, Quit, RedoEdit, Refresh, SaveFile, UndoEdit};
+use app::{
+    About, NextChange, OpenRepository, Patchlook, PreviousChange, Quit, RedoEdit, Refresh,
+    SaveFile, UndoEdit,
+};
 use gpui_kit::*;
 use strings::tr;
 
@@ -54,7 +57,29 @@ fn main() {
                 KeyBinding::new("secondary-z", UndoEdit, Some("Patchlook")),
                 KeyBinding::new("secondary-shift-z", RedoEdit, Some("Patchlook")),
                 KeyBinding::new("secondary-s", SaveFile, Some("Patchlook")),
+                KeyBinding::new("down", NextChange, Some("Diff")),
+                KeyBinding::new("up", PreviousChange, Some("Diff")),
             ]);
+            // the arrows jump between changes, so the modified arrows scroll by line
+            let diff = std::rc::Rc::new(KeyBindingContextPredicate::parse("Diff").unwrap());
+            cx.bind_keys(
+                [
+                    ("secondary-up", "diff::ScrollUp"),
+                    ("secondary-down", "diff::ScrollDown"),
+                ]
+                .map(|(keys, name)| {
+                    let action = cx.build_action(name, None).unwrap();
+                    KeyBinding::load(
+                        keys,
+                        action,
+                        Some(diff.clone()),
+                        false,
+                        None,
+                        &DummyKeyboardMapper,
+                    )
+                    .unwrap()
+                }),
+            );
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();

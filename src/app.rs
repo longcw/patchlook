@@ -12,7 +12,8 @@ use gpui_kit::{
         button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants},
         diff::{
             Diff, DiffAnnotation, DiffChangeIndicator, DiffFile, DiffHunkSeparator,
-            DiffLinePosition, DiffLineRange, DiffMode, DiffOverviewKind, DiffSide, DiffState,
+            DiffLinePosition, DiffLineRange, DiffMode, DiffOverviewKind, DiffScrollAnchor,
+            DiffSide, DiffState,
         },
         h_flex,
         input::{
@@ -70,7 +71,9 @@ gpui_kit::actions!(
         Quit,
         UndoEdit,
         RedoEdit,
-        SaveFile
+        SaveFile,
+        NextChange,
+        PreviousChange
     ]
 );
 
@@ -378,6 +381,10 @@ pub struct Patchlook {
     undo: Vec<SavedEdit>,
     redo: Vec<SavedEdit>,
     scroll_after_load: Option<DiffLinePosition>,
+    /// Where the view was before an in-place reload, which wins over `scroll_after_load`.
+    anchor_after_load: Option<DiffScrollAnchor>,
+    /// The display row the last change jump landed on.
+    change_cursor: Option<usize>,
     view: View,
     history: HistoryState,
     repository_preview: bool,
@@ -488,6 +495,8 @@ impl Patchlook {
             undo: Vec::new(),
             redo: Vec::new(),
             scroll_after_load: None,
+            anchor_after_load: None,
+            change_cursor: None,
             view,
             repository_preview: false,
 
@@ -1070,10 +1079,19 @@ impl Patchlook {
                     .image
                     .as_ref()
                     .map(|image| cx.observe(image, |_, _, cx| cx.notify()));
-                files.diff.update(cx, |diff, cx| diff.set_files(diffs, cx));
-                // After a save, return to the lines that were edited.
-                if let Some(position) = self.scroll_after_load.take() {
-                    let diff = self.history.files.diff.clone();
+                let expand = self.preferences.expand_context;
+                files.diff.update(cx, |diff, cx| {
+                    diff.set_files(diffs, cx);
+                    if expand {
+                        diff.expand_unchanged(cx);
+                    }
+                });
+                // after a save, return to the view or the lines that were edited
+                let diff = self.history.files.diff.clone();
+                if let Some(anchor) = self.anchor_after_load.take() {
+                    self.scroll_after_load = None;
+                    diff.update(cx, |diff, cx| diff.restore_scroll(&anchor, cx));
+                } else if let Some(position) = self.scroll_after_load.take() {
                     diff.update(cx, |diff, cx| diff.scroll_to_line(position, cx));
                 }
             }
@@ -1680,10 +1698,45 @@ impl Patchlook {
         });
     }
 
-    /// Reloads the selected file's diff in place, after its file changed.
+    /// Reloads the selected file's diff in place, keeping the view, after its file changed.
     fn reload_selected_file(&mut self, cx: &mut Context<Self>) {
+        self.anchor_after_load = self.history.files.diff.read(cx).scroll_anchor();
         if let Some(index) = self.history.files.selected_file.take() {
             self.select_source_file(index, cx);
+        }
+    }
+
+    /// Scrolls the diff to the start of the next or previous block of changed rows.
+    fn jump_to_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let diff = self.active_files().diff.clone();
+        let overview = diff.read(cx).overview();
+        let changed: Vec<usize> = overview
+            .marks
+            .iter()
+            .filter(|mark| mark.kind != DiffOverviewKind::Match)
+            .map(|mark| mark.row)
+            .collect();
+        let starts = changed
+            .iter()
+            .enumerate()
+            .filter(|&(ix, &row)| ix == 0 || changed[ix - 1] + 1 < row)
+            .map(|(_, &row)| row)
+            .collect::<Vec<_>>();
+        // keep stepping from the last jump while it is still in view, since a
+        // block near the end cannot scroll to mid-view
+        let visible = overview.visible;
+        let from = self
+            .change_cursor
+            .filter(|row| visible.contains(row))
+            .unwrap_or(visible.start + visible.len() / 2);
+        let target = if forward {
+            starts.into_iter().find(|&row| row > from)
+        } else {
+            starts.into_iter().rev().find(|&row| row < from)
+        };
+        if let Some(row) = target {
+            self.change_cursor = Some(row);
+            diff.update(cx, |diff, cx| diff.scroll_to_row(row, cx));
         }
     }
 
@@ -3683,7 +3736,7 @@ impl Patchlook {
                 })
             })
             .or_else(|| selected_path.map(|path| path.display().to_string()));
-        let folded_context = self.active_files().diff.read(cx).has_collapsed_context();
+        let folded_context = !self.preferences.expand_context;
         h_flex()
             .flex_none()
             .h(px(32.))
@@ -3783,8 +3836,11 @@ impl Patchlook {
                     })
                     .disabled(file.is_none())
                     .on_click(cx.listener(|this, _, _, cx| {
+                        let expand = !this.preferences.expand_context;
+                        this.preferences.expand_context = expand;
+                        this.save_preferences();
                         this.active_files().diff.update(cx, |diff, cx| {
-                            if diff.has_collapsed_context() {
+                            if expand {
                                 diff.expand_unchanged(cx);
                             } else {
                                 diff.collapse_unchanged(cx);
@@ -4839,6 +4895,10 @@ impl Render for Patchlook {
             .on_action(cx.listener(Self::save_file_editor))
             .on_action(cx.listener(|this, _: &UndoEdit, _, cx| this.step_history(true, cx)))
             .on_action(cx.listener(|this, _: &RedoEdit, _, cx| this.step_history(false, cx)))
+            .on_action(cx.listener(|this, _: &NextChange, _, cx| this.jump_to_change(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &PreviousChange, _, cx| this.jump_to_change(false, cx)),
+            )
             .on_action(cx.listener(Self::show_about))
             .child(self.toolbar(cx))
             .when_some(self.visible_error().cloned(), |view, error| {
@@ -5053,6 +5113,8 @@ mod tests {
             undo: Vec::new(),
             redo: Vec::new(),
             scroll_after_load: None,
+            anchor_after_load: None,
+            change_cursor: None,
             view: View::History,
             repository_preview: false,
 
@@ -6536,6 +6598,47 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[gpui_kit::test]
+    fn change_jumps_step_between_blocks_of_changed_rows(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| test_app(window, cx))
+            })
+            .unwrap()
+        });
+        let context: String = (1..=20).map(|n| format!(" {n}\n")).collect();
+        let patch = format!("--- a/a.rs\n+++ b/a.rs\n@@ -1,20 +1,23 @@\n+A\n+B\n{context}+C\n");
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                app.history.files.diff.update(cx, |diff, cx| {
+                    diff.set_context_lines(None, cx);
+                    diff.set_files(DiffFile::parse(&patch).unwrap(), cx)
+                });
+            })
+        });
+        let jump = |forward, cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                app.update(cx, |app, cx| app.jump_to_change(forward, cx));
+                app.read(cx).change_cursor
+            })
+        };
+        let rows = cx.update(|cx| {
+            let overview = app.read(cx).history.files.diff.read(cx).overview();
+            overview
+                .marks
+                .iter()
+                .map(|mark| mark.row)
+                .collect::<Vec<_>>()
+        });
+        let (first, last) = (rows[0], *rows.last().unwrap());
+        assert_eq!(rows.len(), 3);
+        assert_eq!(jump(true, cx), Some(first));
+        assert_eq!(jump(true, cx), Some(last));
+        assert_eq!(jump(true, cx), Some(last));
+        assert_eq!(jump(false, cx), Some(first));
     }
 
     #[gpui_kit::test]
