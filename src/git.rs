@@ -1481,6 +1481,7 @@ mod tests {
             name: "r".into(),
             target: crate::github::LinkTarget::Pull(5),
             base: None,
+            file: None,
         };
         assert_eq!(
             crate::github::fetch_link(&clone, "origin", &link).unwrap(),

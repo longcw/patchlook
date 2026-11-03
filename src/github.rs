@@ -39,6 +39,8 @@ pub struct GitHubLink {
     pub target: LinkTarget,
     /// The branch to compare against; the remote's default branch when absent.
     pub base: Option<String>,
+    /// A file to show first, relative to the repository root.
+    pub file: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,17 +50,20 @@ pub enum LinkTarget {
 }
 
 /// Reads a pull request or compare page link, as `https://` or `patchlook://`, with an
-/// optional `?base=<branch>`. A compare page names its base itself.
+/// optional `?base=<branch>&file=<path>`. A compare page names its base itself.
 pub fn parse_link(url: &str) -> Option<GitHubLink> {
     let rest = url.split_once("://")?.1.strip_prefix("github.com/")?;
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
     let path = path.split_once('#').map_or(path, |(path, _)| path);
     let query = query.split_once('#').map_or(query, |(query, _)| query);
-    let mut base = query
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("base="))
-        .filter(|base| !base.is_empty())
-        .map(str::to_owned);
+    let param = |name: &str| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+            .filter(|value| !value.is_empty())
+            .map(percent_decode)
+    };
+    let mut base = param("base");
     let mut parts = path.splitn(4, '/');
     let (owner, name, kind, rest) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
     let target = match kind {
@@ -83,7 +88,29 @@ pub fn parse_link(url: &str) -> Option<GitHubLink> {
         name: name.to_owned(),
         target,
         base,
+        file: param("file"),
     })
+}
+
+fn percent_decode(text: &str) -> String {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        let hex = tail
+            .get(..2)
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        match (byte, hex) {
+            (b'%', Some(decoded)) => {
+                bytes.push(decoded);
+                rest = &tail[2..];
+            }
+            _ => {
+                bytes.push(byte);
+                rest = tail;
+            }
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Fetches a link's head and base from `remote`, returning the head's ref, its
@@ -340,6 +367,13 @@ mod tests {
             None
         );
         assert_eq!(link("https://github.com/o/r/issues/3"), None);
+        let file =
+            super::parse_link("patchlook://github.com/o/r/pull/1?base=a%2Fb&file=src%2F%C3%A9.rs")
+                .unwrap();
+        assert_eq!(
+            (file.base.as_deref(), file.file.as_deref()),
+            (Some("a/b"), Some("src/é.rs"))
+        );
         assert_eq!(
             super::parse_link("https://github.com/o/r/pull/1")
                 .unwrap()

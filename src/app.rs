@@ -371,8 +371,8 @@ pub struct Patchlook {
     show_saved_file: Option<(PathBuf, Option<DiffLinePosition>)>,
     /// The file to select once the next file list is in place, and where to scroll it.
     pending_file: Option<(PathBuf, Option<DiffLinePosition>)>,
-    /// A linked pull request's head and fork point, to compare once their rows load.
-    pending_compare: Option<(String, String)>,
+    /// A linked pull request's head, fork point and file to show, once their rows load.
+    pending_compare: Option<(String, String, Option<PathBuf>)>,
     /// A network lookup's progress or result, shown in a floating card.
     link_status: Option<LinkStatus>,
     /// The comment or edit being written under some lines of a working-tree file.
@@ -1276,6 +1276,7 @@ impl Patchlook {
             }
         }
         let name = format!("{}/{}", link.owner, link.name);
+        let file = link.file.clone().map(PathBuf::from);
         let missing = tr("no_clone_for").replace("{repository}", &name);
         self.error = None;
         let task = cx.spawn(async move |this, cx| {
@@ -1303,7 +1304,7 @@ impl Patchlook {
                     Ok((repo, head_ref, head, fork)) => {
                         this.preferences
                             .set_viewed_branch(&repo.main, Some(head_ref));
-                        this.pending_compare = Some((head, fork));
+                        this.pending_compare = Some((head, fork, file));
                         this.view = View::History;
                         this.load_repository(repo.root, cx);
                     }
@@ -1323,7 +1324,7 @@ impl Patchlook {
 
     /// Compares a linked head with its fork point, loading earlier pages until both appear.
     fn select_pending_compare(&mut self, cx: &mut Context<Self>) {
-        let Some((head, fork)) = &self.pending_compare else {
+        let Some((head, fork, _)) = &self.pending_compare else {
             return;
         };
         let find = |id: &String| {
@@ -1334,7 +1335,9 @@ impl Patchlook {
         };
         match (find(head), find(fork)) {
             (Some(head), Some(fork)) => {
-                self.pending_compare = None;
+                if let Some((_, _, Some(file))) = self.pending_compare.take() {
+                    self.pending_file = Some((file, None));
+                }
                 self.history.anchor = Some(Row::Commit(head));
                 self.select_row(Row::Commit(fork), true, cx);
             }
@@ -4461,6 +4464,13 @@ impl Patchlook {
             cx.theme().cyan,
             cx.theme().red,
         ];
+        let selected = self.history.selected == Some(row) || self.history.compare == Some(row);
+        // a tint rather than the gray press color, so the picked rows stand out on a light theme
+        let pressed = if selected {
+            cx.theme().blue.opacity(0.2)
+        } else {
+            cx.theme().secondary_active
+        };
         h_flex()
             .h(px(50.))
             .pr_2()
@@ -4480,14 +4490,12 @@ impl Patchlook {
                         .custom(
                             ButtonCustomVariant::new(cx)
                                 .hover(cx.theme().list_hover)
-                                .active(cx.theme().secondary_active),
+                                .active(pressed),
                         )
                         .w_full()
                         .h_full()
                         .justify_start()
-                        .selected(
-                            self.history.selected == Some(row) || self.history.compare == Some(row),
-                        )
+                        .selected(selected)
                         .tooltip(format!("{subject}\n{}", tr("compare_hint")))
                         .accessibility_label(format!("{subject}, {author}, {date}"))
                         .child(
@@ -4551,17 +4559,38 @@ impl Patchlook {
         let Comparison::Range { base, target } = self.history.comparison()? else {
             return None;
         };
-        let short = |id: &str| {
-            self.history
-                .commits
+        let scope = self.history.scope.as_ref();
+        // a side reads as its commit plus the branch it is on: its own branch or tag, else the
+        // base it forked from or the viewed branch that owns it
+        let describe = |id: &str| {
+            let Some(commit) = self.history.commits.iter().find(|commit| commit.id == id) else {
+                return id.to_owned();
+            };
+            let branch = commit
+                .refs
                 .iter()
-                .find(|commit| commit.id == id)
-                .map_or_else(|| id.to_owned(), |commit| commit.short_id.clone())
+                .find(|label| label.kind != RefKind::Tag)
+                .or(commit.refs.first())
+                .map(|label| label.name.clone())
+                .or_else(|| {
+                    scope
+                        .filter(|scope| scope.fork.as_deref() == Some(id))
+                        .map(|scope| scope.base.clone())
+                })
+                .or_else(|| {
+                    scope
+                        .filter(|scope| scope.own.contains(id))
+                        .map(|_| self.viewed_branch_name())
+                });
+            match branch {
+                Some(branch) => format!("{} ({branch})", commit.short_id),
+                None => commit.short_id.clone(),
+            }
         };
         Some(format!(
             "{} → {}",
-            short(&base),
-            target.map_or_else(|| tr("worktree_branch").to_owned(), |id| short(&id))
+            describe(&base),
+            target.map_or_else(|| tr("worktree_branch").to_owned(), |id| describe(&id))
         ))
     }
 
@@ -5905,6 +5934,8 @@ mod tests {
         git(&upstream, &["add", "."]);
         let fork = commit("base");
         git(&upstream, &["checkout", "-qb", "feature"]);
+        std::fs::write(upstream.join("other.txt"), "").unwrap();
+        git(&upstream, &["add", "."]);
         commit("one");
         let head = commit("two");
         git(&upstream, &["update-ref", "refs/pull/9/head", &head]);
@@ -5919,7 +5950,10 @@ mod tests {
                 cx.new(|cx| {
                     let mut app = test_app(window, cx);
                     app.preferences.remember_repository(clone.clone());
-                    app.open_github_link("patchlook://github.com/o/r/pull/9?base=main", cx);
+                    app.open_github_link(
+                        "patchlook://github.com/o/r/pull/9?base=main&file=other.txt",
+                        cx,
+                    );
                     app
                 })
             })
@@ -5934,6 +5968,11 @@ mod tests {
                     target: Some(head)
                 })
             );
+            let files = &app.history.files;
+            let selected = files
+                .selected_file
+                .map(|index| files.changes[index].path.clone());
+            assert_eq!(selected, Some(PathBuf::from("other.txt")));
         });
     }
 
@@ -5996,7 +6035,7 @@ mod tests {
                     target: Some(commits[0].id.clone()),
                 })
             );
-            let label = format!("{} → {}", commits[2].short_id, commits[0].short_id);
+            let label = format!("{} → {} (main)", commits[2].short_id, commits[0].short_id);
             assert!(window.try_find("history-comparison").is_some());
             assert_eq!(app.comparison_label(), Some(label));
             assert!(app.current_commit().is_none());
