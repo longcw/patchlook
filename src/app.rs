@@ -371,6 +371,8 @@ pub struct Patchlook {
     show_saved_file: Option<(PathBuf, Option<DiffLinePosition>)>,
     /// The file to select once the next file list is in place, and where to scroll it.
     pending_file: Option<(PathBuf, Option<DiffLinePosition>)>,
+    /// A linked pull request's head and fork point, to compare once their rows load.
+    pending_compare: Option<(String, String)>,
     /// A network lookup's progress or result, shown in a floating card.
     link_status: Option<LinkStatus>,
     /// The comment or edit being written under some lines of a working-tree file.
@@ -489,6 +491,7 @@ impl Patchlook {
             head: None,
             show_saved_file: None,
             pending_file: None,
+            pending_compare: None,
             link_status: None,
             line_edit: None,
             file_editor: None,
@@ -754,6 +757,7 @@ impl Patchlook {
                             this.history.commits.len() > HISTORY_SEARCH_THRESHOLD;
                         this.history.start(&start);
                         this.apply_changes(start.prepared, cx);
+                        this.select_pending_compare(cx);
                         // A file just saved from a commit's view is now an uncommitted change.
                         if let Some(saved) = this.show_saved_file.take()
                             && this.history.working_changes
@@ -936,6 +940,7 @@ impl Patchlook {
                             }
                         } else {
                             this.history.extend_graph();
+                            this.select_pending_compare(cx);
                         }
                         if let Some(reference) = branch {
                             let repo = this.repository.as_ref().unwrap();
@@ -1249,6 +1254,96 @@ impl Patchlook {
             _task: task,
         });
         cx.notify();
+    }
+
+    /// Opens a GitHub pull request or branch comparison, from its page link, in the
+    /// recent repository that has that GitHub repository as a remote.
+    pub fn open_github_link(&mut self, url: &str, cx: &mut Context<Self>) {
+        let Some(link) = github::parse_link(url) else {
+            self.error = Some(tr("unsupported_link").replace("{link}", url));
+            cx.notify();
+            return;
+        };
+        let mut candidates: Vec<PathBuf> = self
+            .repository
+            .iter()
+            .map(|repo| repo.root.clone())
+            .collect();
+        for entry in &self.preferences.recent_repositories {
+            let path = entry.worktree.clone().unwrap_or_else(|| entry.path.clone());
+            if !candidates.contains(&path) {
+                candidates.push(path);
+            }
+        }
+        let name = format!("{}/{}", link.owner, link.name);
+        let missing = tr("no_clone_for").replace("{repository}", &name);
+        self.error = None;
+        let task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let (repo, remote) = candidates
+                        .iter()
+                        .find_map(|path| {
+                            let repo = Repository::open(path).ok()?;
+                            let remote =
+                                github::remotes(&repo).ok()?.into_iter().find(|remote| {
+                                    remote.owner.eq_ignore_ascii_case(&link.owner)
+                                        && remote.name.eq_ignore_ascii_case(&link.name)
+                                })?;
+                            Some((repo, remote.remote))
+                        })
+                        .ok_or_else(|| anyhow::anyhow!(missing))?;
+                    let (head_ref, head, fork) = github::fetch_link(&repo, &remote, &link)?;
+                    anyhow::Ok((repo, head_ref, head, fork))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.link_status = None;
+                match result {
+                    Ok((repo, head_ref, head, fork)) => {
+                        this.preferences
+                            .set_viewed_branch(&repo.main, Some(head_ref));
+                        this.pending_compare = Some((head, fork));
+                        this.view = View::History;
+                        this.load_repository(repo.root, cx);
+                    }
+                    Err(error) => this.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        });
+        self.link_status = Some(LinkStatus {
+            text: tr("fetching_link").replace("{repository}", &name),
+            running: true,
+            undo: false,
+            _task: task,
+        });
+        cx.notify();
+    }
+
+    /// Compares a linked head with its fork point, loading earlier pages until both appear.
+    fn select_pending_compare(&mut self, cx: &mut Context<Self>) {
+        let Some((head, fork)) = &self.pending_compare else {
+            return;
+        };
+        let find = |id: &String| {
+            self.history
+                .commits
+                .iter()
+                .position(|commit| &commit.id == id)
+        };
+        match (find(head), find(fork)) {
+            (Some(head), Some(fork)) => {
+                self.pending_compare = None;
+                self.history.anchor = Some(Row::Commit(head));
+                self.select_row(Row::Commit(fork), true, cx);
+            }
+            _ if self.history.has_more => self.load_more(cx),
+            _ => {
+                self.pending_compare = None;
+                self.error = Some(tr("link_commits_missing").to_owned());
+            }
+        }
     }
 
     fn open_github(
@@ -5107,6 +5202,7 @@ mod tests {
             head: None,
             show_saved_file: None,
             pending_file: None,
+            pending_compare: None,
             link_status: None,
             line_edit: None,
             file_editor: None,
@@ -5589,7 +5685,7 @@ mod tests {
         }
     }
 
-    fn git(directory: &std::path::Path, args: &[&str]) {
+    fn git(directory: &std::path::Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .arg("-C")
             .arg(directory)
@@ -5609,6 +5705,7 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
     #[gpui_kit::test]
@@ -5785,6 +5882,59 @@ mod tests {
                 "Working change"
             );
         }
+    }
+
+    #[gpui_kit::test]
+    fn a_pull_request_link_compares_its_head_with_where_it_left_the_base(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let (upstream, clone) = (
+            directory.path().join("github.com/o/r"),
+            directory.path().join("clone"),
+        );
+        for root in [&upstream, &clone] {
+            std::fs::create_dir_all(root).unwrap();
+            git(root, &["init", "-qb", "main"]);
+        }
+        let commit = |message: &str| {
+            std::fs::write(upstream.join("file.txt"), message).unwrap();
+            git(&upstream, &["commit", "-qam", message]);
+            git(&upstream, &["rev-parse", "HEAD"])
+        };
+        std::fs::write(upstream.join("file.txt"), "").unwrap();
+        git(&upstream, &["add", "."]);
+        let fork = commit("base");
+        git(&upstream, &["checkout", "-qb", "feature"]);
+        commit("one");
+        let head = commit("two");
+        git(&upstream, &["update-ref", "refs/pull/9/head", &head]);
+        git(&upstream, &["checkout", "-q", "main"]);
+        commit("later");
+        git(
+            &clone,
+            &["remote", "add", "origin", upstream.to_str().unwrap()],
+        );
+        let (_, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = test_app(window, cx);
+                    app.preferences.remember_repository(clone.clone());
+                    app.open_github_link("patchlook://github.com/o/r/pull/9?base=main", cx);
+                    app
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.history.comparison(),
+                Some(Comparison::Range {
+                    base: fork,
+                    target: Some(head)
+                })
+            );
+        });
     }
 
     #[gpui_kit::test]

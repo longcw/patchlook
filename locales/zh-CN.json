@@ -163,5 +163,9 @@
   "github_cli": "GitHub CLI",
   "github_cli_help": "用于在 GitHub 上查找拉取请求和提交。从 cli.github.com 安装 gh 并运行 `gh auth login`；SSH 仓库需安装在其主机上。",
   "ssh": "SSH",
-  "ssh_help": "远程仓库使用你的 ~/.ssh/config 和密钥登录（ssh-copy-id），应用无法回答密码提示。主机上需要有 git。"
+  "ssh_help": "远程仓库使用你的 ~/.ssh/config 和密钥登录（ssh-copy-id），应用无法回答密码提示。主机上需要有 git。",
+  "unsupported_link": "Patchlook 只能打开 GitHub 拉取请求和比较链接，无法打开 {link}",
+  "no_clone_for": "最近的仓库中没有以 {repository} 为远程的仓库。请先打开它的克隆，再使用该链接。",
+  "fetching_link": "正在获取 {repository}…",
+  "link_commits_missing": "历史记录中找不到该分支与基础分支的分叉点。"
 }

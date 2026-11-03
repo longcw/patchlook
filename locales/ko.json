@@ -163,5 +163,9 @@
   "github_cli": "GitHub CLI",
   "github_cli_help": "GitHub에서 풀 리퀘스트와 커밋을 찾습니다. cli.github.com에서 gh를 설치하고 `gh auth login`을 실행하세요. SSH 저장소는 해당 호스트에 설치합니다.",
   "ssh": "SSH",
-  "ssh_help": "원격 저장소는 ~/.ssh/config와 키 기반 로그인(ssh-copy-id)을 사용합니다. 앱은 비밀번호 입력에 응답할 수 없습니다. 호스트에 git이 필요합니다."
+  "ssh_help": "원격 저장소는 ~/.ssh/config와 키 기반 로그인(ssh-copy-id)을 사용합니다. 앱은 비밀번호 입력에 응답할 수 없습니다. 호스트에 git이 필요합니다.",
+  "unsupported_link": "Patchlook은 GitHub 풀 리퀘스트와 비교 링크만 열 수 있습니다: {link}",
+  "no_clone_for": "{repository}을(를) 원격으로 가진 최근 저장소가 없습니다. 클론을 한 번 연 다음 링크를 다시 사용하세요.",
+  "fetching_link": "{repository} 가져오는 중…",
+  "link_commits_missing": "이 브랜치가 기준 브랜치에서 갈라진 지점을 기록에서 찾을 수 없습니다."
 }

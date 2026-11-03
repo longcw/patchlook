@@ -163,5 +163,9 @@
   "github_cli": "GitHub CLI",
   "github_cli_help": "Busca pull requests y commits en GitHub. Instala gh desde cli.github.com y ejecuta `gh auth login`; para un repositorio SSH, en su host.",
   "ssh": "SSH",
-  "ssh_help": "Los repositorios remotos usan tu ~/.ssh/config e inicio de sesión con clave (ssh-copy-id), porque la app no puede responder a una contraseña. El host necesita git."
+  "ssh_help": "Los repositorios remotos usan tu ~/.ssh/config e inicio de sesión con clave (ssh-copy-id), porque la app no puede responder a una contraseña. El host necesita git.",
+  "unsupported_link": "Patchlook abre enlaces de pull request y de comparación de GitHub, no {link}",
+  "no_clone_for": "Ningún repositorio reciente tiene {repository} como remoto. Abre su clon una vez y vuelve a usar el enlace.",
+  "fetching_link": "Obteniendo {repository}…",
+  "link_commits_missing": "El historial no llega al punto donde esta rama se separó de su base."
 }

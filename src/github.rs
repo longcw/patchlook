@@ -31,6 +31,94 @@ pub fn parse_remote_url(url: &str) -> Option<GitHubRepo> {
     })
 }
 
+/// A pull request or branch comparison named by a GitHub page link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubLink {
+    pub owner: String,
+    pub name: String,
+    pub target: LinkTarget,
+    /// The branch to compare against; the remote's default branch when absent.
+    pub base: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkTarget {
+    Pull(u64),
+    Branch(String),
+}
+
+/// Reads a pull request or compare page link, as `https://` or `patchlook://`, with an
+/// optional `?base=<branch>`. A compare page names its base itself.
+pub fn parse_link(url: &str) -> Option<GitHubLink> {
+    let rest = url.split_once("://")?.1.strip_prefix("github.com/")?;
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let path = path.split_once('#').map_or(path, |(path, _)| path);
+    let query = query.split_once('#').map_or(query, |(query, _)| query);
+    let mut base = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("base="))
+        .filter(|base| !base.is_empty())
+        .map(str::to_owned);
+    let mut parts = path.splitn(4, '/');
+    let (owner, name, kind, rest) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let target = match kind {
+        "pull" => LinkTarget::Pull(rest.split('/').next()?.parse().ok()?),
+        "compare" => {
+            let rest = rest.trim_end_matches('/');
+            let head = match rest.split_once("...").or_else(|| rest.split_once("..")) {
+                Some((named, head)) => {
+                    base = Some(named.to_owned());
+                    head
+                }
+                None => rest,
+            };
+            // a fork's branch, `owner:branch`, is not on this repository's remote
+            (!head.is_empty() && !head.contains(':')).then_some(())?;
+            LinkTarget::Branch(head.to_owned())
+        }
+        _ => return None,
+    };
+    Some(GitHubLink {
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+        target,
+        base,
+    })
+}
+
+/// Fetches a link's head and base from `remote`, returning the head's ref, its
+/// commit, and where it left the base, which is what GitHub compares against.
+pub fn fetch_link(
+    repo: &Repository,
+    remote: &str,
+    link: &GitHubLink,
+) -> Result<(String, String, String)> {
+    let base = match &link.base {
+        Some(base) => base.clone(),
+        None => repo.remote_default_branch(remote)?,
+    };
+    let (source, head) = match &link.target {
+        LinkTarget::Pull(number) => (
+            format!("refs/pull/{number}/head"),
+            format!("refs/remotes/{remote}/pull/{number}"),
+        ),
+        LinkTarget::Branch(branch) => (
+            format!("refs/heads/{branch}"),
+            format!("refs/remotes/{remote}/{branch}"),
+        ),
+    };
+    let base_ref = format!("refs/remotes/{remote}/{base}");
+    repo.fetch(
+        remote,
+        &[
+            format!("+{source}:{head}"),
+            format!("+refs/heads/{base}:{base_ref}"),
+        ],
+    )?;
+    let fork = repo.merge_base(&base_ref, &head)?;
+    Ok((head.clone(), repo.resolve(&head)?, fork))
+}
+
 /// GitHub remotes, `upstream` first since pull requests from a fork land there.
 pub fn remotes(repo: &Repository) -> Result<Vec<GitHubRepo>> {
     let mut remotes: Vec<_> = repo
@@ -230,6 +318,36 @@ const MAX_PARALLEL: usize = 8;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn links_name_a_pull_request_or_a_branch_comparison() {
+        let link = |url| super::parse_link(url).map(|link| (link.target, link.base));
+        use super::LinkTarget::{Branch, Pull};
+        assert_eq!(
+            link("patchlook://github.com/o/r/pull/12/files?base=dev#diff"),
+            Some((Pull(12), Some("dev".into())))
+        );
+        assert_eq!(link("https://github.com/o/r/pull/7"), Some((Pull(7), None)));
+        assert_eq!(
+            link("https://github.com/o/r/compare/main...longc/x"),
+            Some((Branch("longc/x".into()), Some("main".into())))
+        );
+        assert_eq!(
+            link("https://github.com/o/r/compare/topic"),
+            Some((Branch("topic".into()), None))
+        );
+        assert_eq!(
+            link("https://github.com/o/r/compare/main...them:topic"),
+            None
+        );
+        assert_eq!(link("https://github.com/o/r/issues/3"), None);
+        assert_eq!(
+            super::parse_link("https://github.com/o/r/pull/1")
+                .unwrap()
+                .name,
+            "r"
+        );
+    }
+
     use super::*;
 
     #[test]

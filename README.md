@@ -26,6 +26,7 @@ Inspect local changes, explore commit history, and compare file versions without
 - **Worktrees** — a repository's linked worktrees share one Recent entry named after the repository; switch between them from the title bar.
 - **Remote repositories** — open `host:/path` or `host:~/path` from the globe button in **Repos** to browse a repository over SSH, like VS Code Remote. Uses your `~/.ssh/config` and key authentication; one shared connection serves every Git call.
 - **Compare any two points** — click a row, then Ctrl/⌘-click another to diff any two commits, or a commit against the working tree.
+- **Open GitHub pull requests** — a `patchlook://github.com/<owner>/<repo>/pull/<n>` link, or `…/compare/<base>...<branch>`, fetches the pull request into the Recent repository whose remote is that GitHub repository and compares it with where it left its base, as GitHub does. Add `?base=<branch>` to a pull request link when its base is not the default branch. A browser userscript can link there by replacing `https://` with `patchlook://` on a pull request page (macOS app bundle).
 - **Compare code** — switch between side-by-side and inline diffs, with syntax highlighting and changes highlighted within each line.
 - **Stay focused** — collapse unchanged sections, wrap long lines, or scroll both versions together.
 - **Compare images** — view versions side by side, fit them to the window, or zoom and pan to inspect details.

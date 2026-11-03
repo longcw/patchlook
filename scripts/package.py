@@ -121,6 +121,10 @@ def main() -> None:
             "CFBundleLocalizations": sorted(file.stem for file in (root / "locales").glob("*.json")),
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "15.0",
+            # patchlook://github.com/... links from the browser open a pull request
+            "CFBundleURLTypes": [
+                {"CFBundleURLName": f"dev.{package_name}.github-link", "CFBundleURLSchemes": [package_name]}
+            ],
         }
         with (contents / "Info.plist").open("wb") as stream:
             plistlib.dump(info, stream)

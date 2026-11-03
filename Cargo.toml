@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+async-channel = "2"
 directories = "6"
 gpui-kit = { version = "=0.8.0", features = ["syntect"] }
 serde = { version = "1", features = ["derive"] }

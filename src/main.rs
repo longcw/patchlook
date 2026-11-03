@@ -13,97 +13,126 @@ use gpui_kit::*;
 use strings::tr;
 
 fn main() {
-    let repository = std::env::args_os().nth(1).map(std::path::PathBuf::from);
-    application()
-        .with_assets(file_icons::AppAssets)
-        .run(move |cx| {
-            init(cx);
-            let dark = std::rc::Rc::new(
-                serde_json::from_str::<component::ThemeConfig>(include_str!("../themes/dark.json"))
-                    .expect("The bundled dark theme must be valid"),
-            );
-            let light_overrides: component::ThemeConfig =
-                serde_json::from_str(include_str!("../themes/light.json"))
-                    .expect("The bundled light theme must be valid");
-            let mut light = component::Theme::global(cx).light_theme.as_ref().clone();
-            light.name = light_overrides.name;
-            light.colors.accent = light_overrides.colors.accent;
-            light.colors.list_hover = light_overrides.colors.list_hover;
-            light.colors.secondary = light_overrides.colors.secondary;
-            light.colors.secondary_hover = light_overrides.colors.secondary_hover;
-            light.colors.secondary_active = light_overrides.colors.secondary_active;
-            light.colors.button_active = light_overrides.colors.button_active;
-            if let Some(overrides) = light_overrides.highlight {
-                let highlight = light
-                    .highlight
-                    .as_mut()
-                    .expect("The default light theme must include syntax colors");
-                highlight.editor_foreground = overrides.editor_foreground;
-                highlight.syntax.variable = overrides.syntax.variable;
-                highlight.syntax.property = overrides.syntax.property;
-                highlight.syntax.embedded = overrides.syntax.embedded;
-            }
-            component::Theme::update(cx, |theme| {
-                theme.dark_theme = dark;
-                theme.light_theme = std::rc::Rc::new(light);
-            });
-            cx.on_action(|_: &Quit, cx| cx.quit());
-            cx.bind_keys([
-                KeyBinding::new("secondary-o", OpenRepository, None),
-                KeyBinding::new("secondary-r", Refresh, None),
-                KeyBinding::new("f5", Refresh, None),
-                KeyBinding::new("secondary-q", Quit, None),
-                // Text fields keep their own undo; these act on saved files.
-                KeyBinding::new("secondary-z", UndoEdit, Some("Patchlook")),
-                KeyBinding::new("secondary-shift-z", RedoEdit, Some("Patchlook")),
-                KeyBinding::new("secondary-s", SaveFile, Some("Patchlook")),
-                KeyBinding::new("down", NextChange, Some("Diff")),
-                KeyBinding::new("up", PreviousChange, Some("Diff")),
-            ]);
-            // the arrows jump between changes, so the modified arrows scroll by line
-            let diff = std::rc::Rc::new(KeyBindingContextPredicate::parse("Diff").unwrap());
-            cx.bind_keys(
-                [
-                    ("secondary-up", "diff::ScrollUp"),
-                    ("secondary-down", "diff::ScrollDown"),
-                ]
-                .map(|(keys, name)| {
-                    let action = cx.build_action(name, None).unwrap();
-                    KeyBinding::load(
-                        keys,
-                        action,
-                        Some(diff.clone()),
-                        false,
-                        None,
-                        &DummyKeyboardMapper,
-                    )
-                    .unwrap()
-                }),
-            );
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-            let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
-            open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(900.), px(560.))),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some(tr("app_name").into()),
-                        ..component::TitleBar::title_bar_options()
-                    }),
-                    app_id: Some(concat!("dev.", env!("CARGO_PKG_NAME"), ".app").into()),
-                    ..component::TitleBar::window_options()
-                },
-                cx,
-                |window, cx| cx.new(|cx| Patchlook::new(repository, window, cx)),
-            )
-            .expect("Cannot open Patchlook");
-            cx.activate(true);
+    let argument = std::env::args_os().nth(1);
+    // a GitHub link opens like one from the browser; anything else is a repository path
+    let link = argument
+        .as_ref()
+        .and_then(|argument| argument.to_str())
+        .filter(|argument| argument.contains("://"))
+        .map(str::to_owned);
+    let repository = argument
+        .filter(|_| link.is_none())
+        .map(std::path::PathBuf::from);
+    let (opened, links) = async_channel::unbounded();
+    let application = application().with_assets(file_icons::AppAssets);
+    application.on_open_urls(move |urls| {
+        for url in urls {
+            let _ = opened.try_send(url);
+        }
+    });
+    application.run(move |cx| {
+        init(cx);
+        let dark = std::rc::Rc::new(
+            serde_json::from_str::<component::ThemeConfig>(include_str!("../themes/dark.json"))
+                .expect("The bundled dark theme must be valid"),
+        );
+        let light_overrides: component::ThemeConfig =
+            serde_json::from_str(include_str!("../themes/light.json"))
+                .expect("The bundled light theme must be valid");
+        let mut light = component::Theme::global(cx).light_theme.as_ref().clone();
+        light.name = light_overrides.name;
+        light.colors.accent = light_overrides.colors.accent;
+        light.colors.list_hover = light_overrides.colors.list_hover;
+        light.colors.secondary = light_overrides.colors.secondary;
+        light.colors.secondary_hover = light_overrides.colors.secondary_hover;
+        light.colors.secondary_active = light_overrides.colors.secondary_active;
+        light.colors.button_active = light_overrides.colors.button_active;
+        if let Some(overrides) = light_overrides.highlight {
+            let highlight = light
+                .highlight
+                .as_mut()
+                .expect("The default light theme must include syntax colors");
+            highlight.editor_foreground = overrides.editor_foreground;
+            highlight.syntax.variable = overrides.syntax.variable;
+            highlight.syntax.property = overrides.syntax.property;
+            highlight.syntax.embedded = overrides.syntax.embedded;
+        }
+        component::Theme::update(cx, |theme| {
+            theme.dark_theme = dark;
+            theme.light_theme = std::rc::Rc::new(light);
         });
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.bind_keys([
+            KeyBinding::new("secondary-o", OpenRepository, None),
+            KeyBinding::new("secondary-r", Refresh, None),
+            KeyBinding::new("f5", Refresh, None),
+            KeyBinding::new("secondary-q", Quit, None),
+            // Text fields keep their own undo; these act on saved files.
+            KeyBinding::new("secondary-z", UndoEdit, Some("Patchlook")),
+            KeyBinding::new("secondary-shift-z", RedoEdit, Some("Patchlook")),
+            KeyBinding::new("secondary-s", SaveFile, Some("Patchlook")),
+            KeyBinding::new("down", NextChange, Some("Diff")),
+            KeyBinding::new("up", PreviousChange, Some("Diff")),
+        ]);
+        // the arrows jump between changes, so the modified arrows scroll by line
+        let diff = std::rc::Rc::new(KeyBindingContextPredicate::parse("Diff").unwrap());
+        cx.bind_keys(
+            [
+                ("secondary-up", "diff::ScrollUp"),
+                ("secondary-down", "diff::ScrollDown"),
+            ]
+            .map(|(keys, name)| {
+                let action = cx.build_action(name, None).unwrap();
+                KeyBinding::load(
+                    keys,
+                    action,
+                    Some(diff.clone()),
+                    false,
+                    None,
+                    &DummyKeyboardMapper,
+                )
+                .unwrap()
+            }),
+        );
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+        let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+        let (window, view) = open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(900.), px(560.))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(tr("app_name").into()),
+                    ..component::TitleBar::title_bar_options()
+                }),
+                app_id: Some(concat!("dev.", env!("CARGO_PKG_NAME"), ".app").into()),
+                ..component::TitleBar::window_options()
+            },
+            cx,
+            |window, cx| cx.new(|cx| Patchlook::new(repository, window, cx)),
+        )
+        .expect("Cannot open Patchlook");
+        cx.activate(true);
+        cx.spawn(async move |cx| {
+            let mut next = link;
+            loop {
+                let url = match next.take() {
+                    Some(url) => url,
+                    None => match links.recv().await {
+                        Ok(url) => url,
+                        Err(_) => break,
+                    },
+                };
+                let _ = window.update(cx, |_, window, _| window.activate_window());
+                view.update(cx, |app, cx| app.open_github_link(&url, cx));
+            }
+        })
+        .detach();
+    });
 }
 
 fn update_menus(cx: &mut App) {

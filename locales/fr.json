@@ -163,5 +163,9 @@
   "github_cli": "GitHub CLI",
   "github_cli_help": "Trouve les pull requests et commits sur GitHub. Installez gh depuis cli.github.com et lancez `gh auth login` ; pour un dépôt SSH, sur son hôte.",
   "ssh": "SSH",
-  "ssh_help": "Les dépôts distants utilisent votre ~/.ssh/config et une connexion par clé (ssh-copy-id), l'application ne pouvant pas répondre à un mot de passe. L'hôte doit avoir git."
+  "ssh_help": "Les dépôts distants utilisent votre ~/.ssh/config et une connexion par clé (ssh-copy-id), l'application ne pouvant pas répondre à un mot de passe. L'hôte doit avoir git.",
+  "unsupported_link": "Patchlook ouvre les liens de pull request et de comparaison GitHub, pas {link}",
+  "no_clone_for": "Aucun dépôt récent n’a {repository} comme distant. Ouvrez son clone une fois, puis réutilisez le lien.",
+  "fetching_link": "Récupération de {repository}…",
+  "link_commits_missing": "L’historique n’atteint pas le point où cette branche a quitté sa base."
 }

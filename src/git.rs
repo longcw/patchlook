@@ -668,7 +668,40 @@ impl Repository {
         })
     }
 
-    fn resolve(&self, revision: &str) -> Result<String> {
+    /// Fetches `refspecs` from `remote` without tags.
+    pub fn fetch(&self, remote: &str, refspecs: &[String]) -> Result<()> {
+        output(
+            command(&self.root)
+                .args(["fetch", "--no-tags", "--quiet", remote])
+                .args(refspecs),
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// The branch `remote`'s HEAD points at, such as `main`.
+    pub fn remote_default_branch(&self, remote: &str) -> Result<String> {
+        let listing = text(output(
+            command(&self.root).args(["ls-remote", "--symref", remote, "HEAD"]),
+            false,
+        )?)?;
+        listing
+            .lines()
+            .find_map(|line| line.strip_prefix("ref: refs/heads/")?.split_once('\t'))
+            .map(|(branch, _)| branch.to_owned())
+            .with_context(|| format!("{remote} does not name a default branch"))
+    }
+
+    pub fn merge_base(&self, a: &str, b: &str) -> Result<String> {
+        Ok(text(output(
+            command(&self.root).args(["merge-base", a, b]),
+            false,
+        )?)?
+        .trim()
+        .to_owned())
+    }
+
+    pub fn resolve(&self, revision: &str) -> Result<String> {
         Ok(text(output(
             command(&self.root)
                 .args(["rev-parse", "--verify"])
@@ -1423,6 +1456,36 @@ mod tests {
     fn commit(repo: &Repository, message: &str) {
         run(&repo.root, &["add", "--all"]);
         run(&repo.root, &["commit", "-m", message]);
+    }
+
+    #[test]
+    fn a_pull_request_link_fetches_its_head_and_where_it_left_the_base() {
+        let (_github, upstream) = fixture();
+        fs::write(upstream.root.join("a"), "base\n").unwrap();
+        commit(&upstream, "Base");
+        let fork = upstream.resolve("HEAD").unwrap();
+        run(&upstream.root, &["checkout", "-b", "feature"]);
+        fs::write(upstream.root.join("a"), "feature\n").unwrap();
+        commit(&upstream, "Feature");
+        let head = upstream.resolve("HEAD").unwrap();
+        run(&upstream.root, &["update-ref", "refs/pull/5/head", &head]);
+        run(&upstream.root, &["checkout", "main"]);
+        fs::write(upstream.root.join("b"), "later\n").unwrap();
+        commit(&upstream, "Later");
+
+        let (_clone, clone) = fixture();
+        let url = upstream.root.to_str().unwrap();
+        run(&clone.root, &["remote", "add", "origin", url]);
+        let link = crate::github::GitHubLink {
+            owner: "o".into(),
+            name: "r".into(),
+            target: crate::github::LinkTarget::Pull(5),
+            base: None,
+        };
+        assert_eq!(
+            crate::github::fetch_link(&clone, "origin", &link).unwrap(),
+            ("refs/remotes/origin/pull/5".into(), head, fork)
+        );
     }
 
     #[test]

@@ -163,5 +163,9 @@
   "github_cli": "GitHub CLI",
   "github_cli_help": "GitHub 上のプルリクエストとコミットを探します。cli.github.com から gh をインストールして `gh auth login` を実行してください。SSH リポジトリではそのホストにインストールします。",
   "ssh": "SSH",
-  "ssh_help": "リモートリポジトリは ~/.ssh/config と鍵によるログイン（ssh-copy-id）を使います。アプリはパスワード入力に応答できません。ホストには git が必要です。"
+  "ssh_help": "リモートリポジトリは ~/.ssh/config と鍵によるログイン（ssh-copy-id）を使います。アプリはパスワード入力に応答できません。ホストには git が必要です。",
+  "unsupported_link": "Patchlook が開けるのは GitHub のプルリクエストと比較のリンクだけです: {link}",
+  "no_clone_for": "{repository} をリモートに持つ最近のリポジトリがありません。一度そのクローンを開いてから、もう一度リンクを使ってください。",
+  "fetching_link": "{repository} を取得中…",
+  "link_commits_missing": "このブランチがベースから分かれた地点が履歴に見つかりません。"
 }
